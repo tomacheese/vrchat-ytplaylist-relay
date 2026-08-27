@@ -7,13 +7,10 @@ export class KeyedMutex {
 
   async run<T>(key: string, task: () => Promise<T>): Promise<T> {
     const previousTail = this.tails.get(key) ?? Promise.resolve()
-    let resolveTail!: () => void
-    // Promise.withResolvers() は Node.js 22+ が必要 (.node-version は 20.18.1 を対象とする) ため、
-    // 従来の new Promise() での resolver 抽出を使う。
-    // eslint-disable-next-line unicorn/prefer-promise-with-resolvers
-    const thisTail = new Promise<void>((resolve) => {
-      resolveTail = resolve
-    })
+    const {
+      promise: thisTail,
+      resolve: resolveTail,
+    }: PromiseWithResolvers<void> = Promise.withResolvers()
     this.tails.set(key, thisTail)
 
     await previousTail

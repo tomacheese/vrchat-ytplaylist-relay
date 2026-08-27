@@ -5,7 +5,7 @@
     // 実ビルド (dist への出力) は tsconfig.build.json で CommonJS / Node 解決に上書きする。
     "module": "Preserve",
     "moduleResolution": "Bundler",
-    "lib": ["ES2023"],
+    "lib": ["ES2024"],
     "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,

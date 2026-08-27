@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-FROM node:20-bookworm-slim AS build
+FROM node:24-bookworm-slim AS build
 
 RUN corepack enable
 
@@ -11,7 +11,7 @@ COPY tsconfig.json ./
 COPY src ./src
 RUN pnpm run build
 
-FROM node:20-bookworm-slim AS runtime
+FROM node:24-bookworm-slim AS runtime
 
 # ffmpeg: "proxy" 配信モードで映像 (DASH) + 音声 (DASH) を mp4 に結合するために必須。
 # ca-certificates: yt-dlp / Node の HTTPS 通信に必要。curl: yt-dlp standalone binary の取得用。
