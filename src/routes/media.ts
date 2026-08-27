@@ -5,8 +5,8 @@ import { rateLimit } from 'express-rate-limit'
 import { isPlaylistAllowed } from '../config'
 import type { AppConfig } from '../config'
 import {
+  getFreshOrStale,
   getOrDownload,
-  peekFreshCache,
   triggerBackgroundDownload,
 } from '../media-cache'
 import { resolveVideoIdForPosition } from '../refresh'
@@ -43,6 +43,11 @@ function redirectToYoutube(res: Response, videoId: string): void {
  * - "hybrid": キャッシュ済みなら "proxy" と同様にバイト列を直接配信する。未キャッシュ (または TTL 切れ) の
  *   場合は応答をブロックせず、裏でダウンロードを開始しつつ即座に "redirect" と同様の 302 応答を返す。
  *   Client が Timeout 後に再リクエストしてくる頃にはダウンロードが完了している想定。
+ *
+ * "proxy" / "hybrid" いずれも、TTL 切れで再ダウンロード中の場合は直前まで有効だった完了済み
+ * キャッシュファイルを ("stale-while-revalidate") そのまま配信し続け、ブロックや Redirect
+ * フォールバックを発生させない (`getFreshOrStale`)。再ダウンロードが完了すると次回以降の
+ * リクエストから新しいファイルに切り替わる。
  */
 export function mediaRouter(config: AppConfig): Router {
   const router = Router()
@@ -80,7 +85,7 @@ export function mediaRouter(config: AppConfig): Router {
         }
 
         if (config.deliveryMode === 'hybrid') {
-          const cachedPath = peekFreshCache(config, videoId)
+          const cachedPath = getFreshOrStale(config, videoId)
           if (cachedPath) {
             res.sendFile(path.resolve(cachedPath))
             return
@@ -91,6 +96,12 @@ export function mediaRouter(config: AppConfig): Router {
         }
 
         // "proxy"
+        const cachedOrStalePath = getFreshOrStale(config, videoId)
+        if (cachedOrStalePath) {
+          res.sendFile(path.resolve(cachedOrStalePath))
+          return
+        }
+
         getOrDownload(config, videoId)
           .then((filePath) => {
             res.sendFile(path.resolve(filePath))
