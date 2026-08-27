@@ -91,7 +91,10 @@ test('peekFreshCache returns the cached file path when the entry is within TTL',
   cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yrp-peek-test-'))
   seedCacheEntry(cacheDir, 'v1', Date.now())
 
-  const config = makeConfig({ mediaCacheDir: cacheDir, mediaCacheTtlMs: 60_000 })
+  const config = makeConfig({
+    mediaCacheDir: cacheDir,
+    mediaCacheTtlMs: 60_000,
+  })
 
   const result = peekFreshCache(config, 'v1')
 
@@ -102,7 +105,10 @@ test('peekFreshCache returns null when the cached entry has exceeded the TTL', (
   cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yrp-peek-test-'))
   seedCacheEntry(cacheDir, 'v1', Date.now() - 120_000)
 
-  const config = makeConfig({ mediaCacheDir: cacheDir, mediaCacheTtlMs: 60_000 })
+  const config = makeConfig({
+    mediaCacheDir: cacheDir,
+    mediaCacheTtlMs: 60_000,
+  })
 
   assert.equal(peekFreshCache(config, 'v1'), null)
 })

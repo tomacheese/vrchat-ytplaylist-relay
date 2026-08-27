@@ -1,6 +1,7 @@
 import path from 'node:path'
 import { Router } from 'express'
 import type { Response } from 'express'
+import { rateLimit } from 'express-rate-limit'
 import { isPlaylistAllowed } from '../config'
 import type { AppConfig } from '../config'
 import {
@@ -11,6 +12,9 @@ import {
 import { loadSlotState } from '../manifest-store'
 
 const POSITION_PATTERN = /^(\d+)\.mp4$/
+
+/** yt-dlp ダウンロード・ファイル配信を伴うため IP ごとに 1 分あたり 60 リクエストへ制限する (DoS 対策)。 */
+const mediaRateLimit = rateLimit({ windowMs: 60_000, limit: 60 })
 
 /** 解決済み videoId を YouTube 視聴 URL へ 302 Redirect する ("redirect" / "hybrid" フォールバックの共通処理)。 */
 function redirectToYoutube(res: Response, videoId: string): void {
@@ -38,7 +42,7 @@ function redirectToYoutube(res: Response, videoId: string): void {
 export function mediaRouter(config: AppConfig): Router {
   const router = Router()
 
-  router.get('/:playlistId/:positionFile', (req, res) => {
+  router.get('/:playlistId/:positionFile', mediaRateLimit, (req, res) => {
     const { playlistId, positionFile } = req.params
     if (!isPlaylistAllowed(config, playlistId)) {
       res.status(404).send('unknown playlistId')
