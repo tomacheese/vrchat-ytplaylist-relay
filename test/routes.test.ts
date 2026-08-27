@@ -173,8 +173,9 @@ test('GET /:playlistId/:position.mp4 triggers a refresh fallback when slot state
     const res = await fetch(
       `http://127.0.0.1:${address.port}/never-refreshed-playlist/0.mp4`
     )
-    // slots.json が無いため yt-dlp は失敗し、最終的には 404 (position 解決不可) になる。
-    assert.equal(res.status, 404)
+    // slots.json が無いため yt-dlp Refresh が走るが、yt-dlp 自体が存在せず失敗するため 502 になる
+    // (position が本当に存在しないケースの 404 とは区別される)。
+    assert.equal(res.status, 502)
     // Refresh フォールバックが実際に呼ばれたことは、失敗時に recordFailure() が
     // slots.json を永続化する副作用で検証する (呼ばれていなければファイルは存在しない)。
     const slotsPath = path.join(

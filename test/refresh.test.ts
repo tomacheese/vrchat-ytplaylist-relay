@@ -9,6 +9,7 @@ import {
   getManifestForClient,
   primeManifestCacheForTests,
   refreshAll,
+  refreshPlaylist,
   resolveVideoIdForPosition,
 } from '../src/refresh'
 import type { Manifest } from '../src/types'
@@ -111,6 +112,21 @@ test('refreshAll targets playlistIds with persisted slot state when the allowlis
   )
 })
 
+test('refreshPlaylist single-flights concurrent calls for the same playlistId', async () => {
+  const config = baseConfig('pl-concurrent')
+
+  const [result1, result2] = await Promise.all([
+    refreshPlaylist(config, 'pl-concurrent'),
+    refreshPlaylist(config, 'pl-concurrent'),
+  ])
+
+  assert.equal(
+    result1,
+    result2,
+    '同時に呼ばれた refreshPlaylist は同一の Promise (同一結果オブジェクト) を共有するはず'
+  )
+})
+
 test('resolveVideoIdForPosition triggers a refresh when slot state does not exist yet', async () => {
   const config = baseConfig('pl-cold-start')
 
@@ -119,6 +135,11 @@ test('resolveVideoIdForPosition triggers a refresh when slot state does not exis
   assert.ok(
     'error' in result,
     'yt-dlp-does-not-exist の baseConfig では Refresh が失敗するはず'
+  )
+  assert.equal(
+    'reason' in result ? result.reason : undefined,
+    'refresh_failed',
+    'Refresh 自体の失敗は not_found ではなく refresh_failed として区別されるはず'
   )
 })
 
@@ -153,10 +174,9 @@ test('resolveVideoIdForPosition does not retry refresh within manifestCacheTtlMs
     [{ id: 'v1', title: 'Track 1', duration: 100 }],
     Date.now()
   )
-  // lastRefreshAt を「直近」に設定した状態で永続化する。
   persistSlotState(config.dataDir, { ...state, lastRefreshAt: Date.now() })
 
-  // position 1 は存在しない。直近 Refresh 済みのため Refresh は再試行されないはずで、
+  // position 1 は存在しない。直近 Refresh 済み (かつ成功) のため Refresh は再試行されないはずで、
   // その場合 error は必ず 'unknown position' になる (Refresh が走れば
   // 'yt-dlp-does-not-exist' に起因する別のエラーメッセージになるため区別できる)。
   const result = await resolveVideoIdForPosition(
@@ -165,5 +185,35 @@ test('resolveVideoIdForPosition does not retry refresh within manifestCacheTtlMs
     1
   )
 
-  assert.deepEqual(result, { error: 'unknown position' })
+  assert.deepEqual(result, { error: 'unknown position', reason: 'not_found' })
+})
+
+test('resolveVideoIdForPosition surfaces the persisted lastError when a recent refresh had failed', async () => {
+  const config = baseConfig('pl-recent-failure', { manifestCacheTtlMs: 60_000 })
+  const { state } = buildManifest(
+    null,
+    'pl-recent-failure',
+    100,
+    [{ id: 'v1', title: 'Track 1', duration: 100 }],
+    Date.now()
+  )
+  persistSlotState(config.dataDir, {
+    ...state,
+    lastRefreshAt: Date.now(),
+    lastRefreshOk: false,
+    lastError: 'network unreachable',
+  })
+
+  // position 1 は存在せず、直近の Refresh は失敗記録 (lastRefreshOk: false) が付いている。
+  // 再試行はしないが、握りつぶさず lastError をそのまま返すはず。
+  const result = await resolveVideoIdForPosition(
+    config,
+    'pl-recent-failure',
+    1
+  )
+
+  assert.deepEqual(result, {
+    error: 'network unreachable',
+    reason: 'refresh_failed',
+  })
 })

@@ -43,7 +43,10 @@ export function mediaRouter(config: AppConfig): Router {
     resolveVideoIdForPosition(config, playlistId, position)
       .then((resolved) => {
         if ('error' in resolved) {
-          res.status(404).send('unknown position')
+          // 一時的な Refresh 失敗 (yt-dlp エラーなど) は 502、position が本当に存在しない
+          // 場合のみ 404 を返す (`getOrDownload` 失敗時の 502 と揃える)。
+          const status = resolved.reason === 'refresh_failed' ? 502 : 404
+          res.status(status).send(resolved.error)
           return
         }
         const { videoId } = resolved
