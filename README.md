@@ -15,6 +15,8 @@ pnpm start
 
 `ytdlp` は `YTDLP_PATH` (既定 `yt-dlp`、PATH 上のもの) を使う。
 
+yt-dlp は YouTube 抽出に外部 JS ランタイム deno を必須とする (`--js-runtimes deno`) ため、ローカル実行時は PATH 上に `deno` をインストールしておく必要がある (Docker 実行時は Image に同梱済み)。
+
 `config/playlists.json` は任意。無い場合は allowlist が無効になり、要求された任意の
 playlistId をそのまま取得・配信する (事前登録不要)。特定の Playlist だけに絞りたい場合や
 Playlist ごとに `maxSlots` を上書きしたい場合は `cp config/playlists.json.example

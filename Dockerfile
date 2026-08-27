@@ -28,6 +28,11 @@ ARG YTDLP_VERSION=2026.08.19
 RUN curl -fL -o /usr/local/bin/yt-dlp "https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}/yt-dlp_linux" \
   && chmod a+rx /usr/local/bin/yt-dlp
 
+# deno: yt-dlp の --js-runtimes (EJS, External JavaScript Solver) が YouTube の n-parameter/signature 解読・PO token 生成に使う外部 JS ランタイム。
+# バージョンは Renovate (renovate.json の customManagers) で自動更新するため latest ではなく固定タグを使う。
+ARG DENO_VERSION=2.7.11
+COPY --from=denoland/deno:bin-${DENO_VERSION} /deno /usr/local/bin/deno
+
 RUN corepack enable
 
 WORKDIR /app
