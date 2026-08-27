@@ -3,12 +3,15 @@ import { Router } from 'express'
 import { isPlaylistAllowed } from '../config'
 import type { AppConfig } from '../config'
 import { getOrDownload } from '../media-cache'
-import { loadSlotState } from '../manifest-store'
+import { resolveVideoIdForPosition } from '../refresh'
 
 const POSITION_PATTERN = /^(\d+)\.mp4$/
 
 /**
  * GET /{playlistId}/{position}.mp4
+ *
+ * Position Pool 状態に対象 position が無い場合 (初回リクエストなど) は、Manifest Endpoint と
+ * 同様に yt-dlp Refresh を自動的に試みてから再解決する (`resolveVideoIdForPosition`)。
  *
  * `config.deliveryMode` により配信方式を切り替える:
  * - "redirect" (既定値): 動画バイト列を配信せず、解決した YouTube 動画へ 302 Redirect するだけ。
@@ -35,29 +38,38 @@ export function mediaRouter(config: AppConfig): Router {
     }
     const position = Number(match[1])
 
-    const state = loadSlotState(config.dataDir, playlistId)
-    const videoId = state?.slotToVideoId[String(position)]
-    if (!videoId) {
-      res.status(404).send('unknown position')
-      return
-    }
-
-    if (config.deliveryMode === 'redirect') {
-      res.redirect(
-        302,
-        `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`
-      )
-      return
-    }
-
     // Router に渡す関数自体は async にせず Promise Chain の末尾 .catch() でエラーを
     // 処理する (Express 4 のハンドラーは void を期待するため。no-misused-promises 対策)。
-    getOrDownload(config, videoId)
-      .then((filePath) => {
-        res.sendFile(path.resolve(filePath))
+    resolveVideoIdForPosition(config, playlistId, position)
+      .then((resolved) => {
+        if ('error' in resolved) {
+          res.status(404).send('unknown position')
+          return
+        }
+        const { videoId } = resolved
+
+        if (config.deliveryMode === 'redirect') {
+          res.redirect(
+            302,
+            `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`
+          )
+          return
+        }
+
+        getOrDownload(config, videoId)
+          .then((filePath) => {
+            res.sendFile(path.resolve(filePath))
+          })
+          .catch((err: unknown) => {
+            res
+              .status(502)
+              .send(`failed to fetch video: ${(err as Error).message}`)
+          })
       })
       .catch((err: unknown) => {
-        res.status(502).send(`failed to fetch video: ${(err as Error).message}`)
+        res
+          .status(502)
+          .send(`failed to resolve position: ${(err as Error).message}`)
       })
   })
 
