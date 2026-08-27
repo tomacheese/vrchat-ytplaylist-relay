@@ -152,7 +152,10 @@ const PLAYLIST_ID_PATTERN = /^[\w-]+$/
  * それ以外は `config.playlists` が空 (allowlist 無効) なら true、そうでなければ一覧に
  * 含まれる playlistId のみ true を返す。
  */
-export function isPlaylistAllowed(config: AppConfig, playlistId: string): boolean {
+export function isPlaylistAllowed(
+  config: AppConfig,
+  playlistId: string
+): boolean {
   if (!PLAYLIST_ID_PATTERN.test(playlistId)) return false
   return (
     config.playlists.length === 0 ||
