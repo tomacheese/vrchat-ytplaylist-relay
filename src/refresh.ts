@@ -163,6 +163,45 @@ export async function getManifestForClient(
   return { manifest: null, error: result.error }
 }
 
+/**
+ * Media Endpoint (`GET /:playlistId/:position.mp4`) 用に、Position から videoId を解決する。
+ * 永続化済み Position Pool 状態にまだ無い場合 (初回リクエスト、Position Pool 状態の消失など) は
+ * Manifest Endpoint と同様に Refresh (yt-dlp 実行) を試みてから再解決する。
+ * 直近 `manifestCacheTtlMs` 以内に Refresh 済みで解決できなかった場合は、無効な position への
+ * 繰り返しリクエストで yt-dlp を連打しないよう Refresh を再試行しない。
+ * 同一 playlistId への同時リクエストが複数回 Refresh を呼ぶこと自体は防がない
+ * (yt-dlp の並列実行は `refreshPlaylist` 内部の `KeyedMutex` が防ぐ)。
+ */
+export async function resolveVideoIdForPosition(
+  config: AppConfig,
+  playlistId: string,
+  position: number
+): Promise<{ videoId: string } | { error: string }> {
+  const state = loadSlotState(config.dataDir, playlistId)
+  const videoId = state?.slotToVideoId[String(position)]
+  if (videoId) return { videoId }
+
+  const recentlyRefreshed =
+    state?.lastRefreshAt !== null &&
+    state?.lastRefreshAt !== undefined &&
+    Date.now() - state.lastRefreshAt < config.manifestCacheTtlMs
+  if (recentlyRefreshed) {
+    return { error: 'unknown position' }
+  }
+
+  const result = await refreshPlaylist(config, playlistId)
+  if (!result.ok) {
+    return { error: result.error ?? 'refresh failed' }
+  }
+
+  const refreshed = loadSlotState(config.dataDir, playlistId)
+  const refreshedVideoId = refreshed?.slotToVideoId[String(position)]
+  if (!refreshedVideoId) {
+    return { error: 'unknown position' }
+  }
+  return { videoId: refreshedVideoId }
+}
+
 /** キャッシュ済み Manifest を yt-dlp を実行せずに覗き見る (`/health` の trackCount 表示用)。 */
 export function peekCachedManifest(playlistId: string): Manifest | null {
   return manifestCache.get(playlistId)?.manifest ?? null

@@ -9,6 +9,7 @@ import {
   getManifestForClient,
   primeManifestCacheForTests,
   refreshAll,
+  resolveVideoIdForPosition,
 } from '../src/refresh'
 import type { Manifest } from '../src/types'
 
@@ -108,4 +109,61 @@ test('refreshAll targets playlistIds with persisted slot state when the allowlis
     results.some((r) => r.playlistId === 'pl-seen-before'),
     'a playlistId with persisted slot state must still be refreshed without a predefined allowlist'
   )
+})
+
+test('resolveVideoIdForPosition triggers a refresh when slot state does not exist yet', async () => {
+  const config = baseConfig('pl-cold-start')
+
+  const result = await resolveVideoIdForPosition(config, 'pl-cold-start', 0)
+
+  assert.ok(
+    'error' in result,
+    'yt-dlp-does-not-exist の baseConfig では Refresh が失敗するはず'
+  )
+})
+
+test('resolveVideoIdForPosition resolves the videoId once slot state is persisted', async () => {
+  const config = baseConfig('pl-known-position')
+  const { state } = buildManifest(
+    null,
+    'pl-known-position',
+    100,
+    [{ id: 'v1', title: 'Track 1', duration: 100 }],
+    Date.now()
+  )
+  persistSlotState(config.dataDir, state)
+
+  const result = await resolveVideoIdForPosition(
+    config,
+    'pl-known-position',
+    0
+  )
+
+  assert.deepEqual(result, { videoId: 'v1' })
+})
+
+test('resolveVideoIdForPosition does not retry refresh within manifestCacheTtlMs after a recent refresh', async () => {
+  const config = baseConfig('pl-recent-refresh', {
+    manifestCacheTtlMs: 60_000,
+  })
+  const { state } = buildManifest(
+    null,
+    'pl-recent-refresh',
+    100,
+    [{ id: 'v1', title: 'Track 1', duration: 100 }],
+    Date.now()
+  )
+  // lastRefreshAt を「直近」に設定した状態で永続化する。
+  persistSlotState(config.dataDir, { ...state, lastRefreshAt: Date.now() })
+
+  // position 1 は存在しない。直近 Refresh 済みのため Refresh は再試行されないはずで、
+  // その場合 error は必ず 'unknown position' になる (Refresh が走れば
+  // 'yt-dlp-does-not-exist' に起因する別のエラーメッセージになるため区別できる)。
+  const result = await resolveVideoIdForPosition(
+    config,
+    'pl-recent-refresh',
+    1
+  )
+
+  assert.deepEqual(result, { error: 'unknown position' })
 })
