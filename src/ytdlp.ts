@@ -107,7 +107,8 @@ export async function fetchPlaylistEntries(
   const args = [
     '--flat-playlist',
     '--dump-single-json',
-    '--no-warnings',
+    '--js-runtimes',
+    'deno',
     '--ignore-no-formats-error',
     url,
   ]
@@ -175,7 +176,8 @@ export async function downloadVideo(
       '--remux-video',
       'mp4',
       '--no-playlist',
-      '--no-warnings',
+      '--js-runtimes',
+      'deno',
       '--no-part',
       '-o',
       outputTemplate,
