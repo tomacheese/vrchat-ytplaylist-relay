@@ -1,0 +1,88 @@
+import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { test } from 'vitest'
+import type { AppConfig } from '../src/config'
+import {
+  getManifestForClient,
+  primeManifestCacheForTests,
+} from '../src/refresh'
+import type { Manifest } from '../src/types'
+
+function tempDataDir(): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'yrp-refresh-test-'))
+}
+
+function baseConfig(
+  playlistId: string,
+  overrides: Partial<AppConfig> = {}
+): AppConfig {
+  return {
+    port: 0,
+    configPath: 'test-config',
+    dataDir: tempDataDir(),
+    adminToken: null,
+    // 実在しないコマンドを指す: このテストでは yt-dlp が実際に起動されないこと、
+    // または起動が失敗として扱われることを検証する。
+    ytdlpPath: 'yt-dlp-does-not-exist',
+    defaultMaxSlots: 100,
+    ytdlpTimeoutMs: 1000,
+    manifestCacheTtlMs: 60_000,
+    deliveryMode: 'redirect',
+    mediaMaxHeight: 1080,
+    mediaCacheDir: tempDataDir(),
+    mediaCacheMaxBytes: 10 * 1024 * 1024 * 1024,
+    mediaCacheTtlMs: 6 * 60 * 60 * 1000,
+    mediaDownloadTimeoutMs: 600_000,
+    playlists: [{ playlistId }],
+    ...overrides,
+  }
+}
+
+function manifest(playlistId: string): Manifest {
+  return {
+    playlistId,
+    generation: 1,
+    updatedAt: 1000,
+    tracks: [{ position: 0, title: 'Track 1' }],
+  }
+}
+
+test('getManifestForClient returns the cached manifest within TTL without invoking yt-dlp', async () => {
+  const config = baseConfig('pl-fresh-cache')
+  primeManifestCacheForTests(
+    'pl-fresh-cache',
+    manifest('pl-fresh-cache'),
+    Date.now()
+  )
+
+  const result = await getManifestForClient(config, 'pl-fresh-cache')
+
+  assert.equal(result.error, undefined)
+  assert.deepEqual(result.manifest, manifest('pl-fresh-cache'))
+})
+
+test('getManifestForClient serves the stale cached manifest when yt-dlp fails after TTL expiry', async () => {
+  const config = baseConfig('pl-stale-cache', { manifestCacheTtlMs: 1 })
+  const stale = manifest('pl-stale-cache')
+  primeManifestCacheForTests('pl-stale-cache', stale, Date.now() - 10_000)
+
+  const result = await getManifestForClient(config, 'pl-stale-cache')
+
+  assert.deepEqual(
+    result.manifest,
+    stale,
+    'stale manifest must still be served on refresh failure'
+  )
+  assert.ok(result.error, 'refresh failure reason should be surfaced')
+})
+
+test('getManifestForClient returns null when there is no cache and yt-dlp fails', async () => {
+  const config = baseConfig('pl-no-cache')
+
+  const result = await getManifestForClient(config, 'pl-no-cache')
+
+  assert.equal(result.manifest, null)
+  assert.ok(result.error)
+})
