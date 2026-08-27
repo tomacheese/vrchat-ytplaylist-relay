@@ -148,6 +148,47 @@ test('GET /unknownpl/manifest.json returns 404, not 401 (route isolation from ad
   assert.equal(res.status, 404)
 })
 
+test('GET /:playlistId/manifest.json accepts any playlistId when the allowlist is empty', async () => {
+  const openDataDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'yrp-route-test-open-')
+  )
+  const openConfig: AppConfig = {
+    ...config,
+    dataDir: openDataDir,
+    playlists: [],
+    // 実 yt-dlp を起動させず即座に失敗させる (allowlist の挙動だけを検証したいため)。
+    ytdlpPath: 'yt-dlp-does-not-exist',
+    ytdlpTimeoutMs: 1000,
+  }
+  const app = createApp(openConfig)
+  let openServer: Server | undefined
+  try {
+    openServer = await new Promise<Server>((resolve) => {
+      const s = app.listen(0, '127.0.0.1', () => {
+        resolve(s)
+      })
+    })
+    const address = openServer.address() as AddressInfo
+    // Manifest はまだキャッシュに無いため、404 (allowlist 拒否) ではなく
+    // 503 (未取得) になるはず。
+    const res = await fetch(
+      `http://127.0.0.1:${address.port}/not-registered-anywhere/manifest.json`
+    )
+    assert.equal(res.status, 503)
+  } finally {
+    if (openServer) {
+      const s = openServer
+      await new Promise<void>((resolve, reject) => {
+        s.close((err) => {
+          if (err) reject(err)
+          else resolve()
+        })
+      })
+    }
+    fs.rmSync(openDataDir, { recursive: true, force: true })
+  }
+})
+
 test('POST /admin/refresh without Authorization is rejected', async () => {
   const res = await fetch(`${baseUrl}/admin/refresh`, { method: 'POST' })
   assert.equal(res.status, 401)

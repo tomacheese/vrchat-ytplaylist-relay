@@ -1,5 +1,6 @@
 import path from 'node:path'
 import { Router } from 'express'
+import { isPlaylistAllowed } from '../config'
 import type { AppConfig } from '../config'
 import { getOrDownload } from '../media-cache'
 import { loadSlotState } from '../manifest-store'
@@ -22,8 +23,7 @@ export function mediaRouter(config: AppConfig): Router {
 
   router.get('/:playlistId/:positionFile', (req, res) => {
     const { playlistId, positionFile } = req.params
-    const known = config.playlists.some((p) => p.playlistId === playlistId)
-    if (!known) {
+    if (!isPlaylistAllowed(config, playlistId)) {
       res.status(404).send('unknown playlistId')
       return
     }

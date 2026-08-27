@@ -1,10 +1,11 @@
 import type { AppConfig } from './config'
-import { maxSlotsFor } from './config'
+import { isPlaylistAllowed, maxSlotsFor } from './config'
 import { logger } from './logger'
 import { KeyedMutex } from './lock'
 import { prefetchAll } from './media-cache'
 import {
   buildManifest,
+  listKnownPlaylistIds,
   loadSlotState,
   persistSlotState,
   recordFailure,
@@ -43,8 +44,7 @@ export async function refreshPlaylist(
   config: AppConfig,
   playlistId: string
 ): Promise<RefreshResult> {
-  const known = config.playlists.some((p) => p.playlistId === playlistId)
-  if (!known) {
+  if (!isPlaylistAllowed(config, playlistId)) {
     return { playlistId, ok: false, error: `Unknown playlistId: ${playlistId}` }
   }
 
@@ -100,14 +100,29 @@ export async function refreshPlaylist(
 }
 
 /**
- * config.playlists の全 Playlist を順に Refresh する。1 件の失敗は他の Playlist の Refresh を妨げない。
+ * 一括 Refresh の対象 playlistId 一覧を求める。
+ * allowlist (`config.playlists`) が設定されていればそれを使い、無効 (空) の場合は
+ * 事前登録が無いため、代わりに Position Pool 状態が永続化済みの (＝一度でも Refresh に
+ * 成功した) playlistId を対象にする。メモリキャッシュ (`manifestCache`) ではなく Disk 上の
+ * 状態を見るのは、`pnpm refresh` CLI が Server と別プロセスで動きメモリを共有しないため。
+ */
+function refreshAllTargets(config: AppConfig): string[] {
+  if (config.playlists.length > 0) {
+    return config.playlists.map((entry) => entry.playlistId)
+  }
+  return listKnownPlaylistIds(config.dataDir)
+}
+
+/**
+ * 一括 Refresh の対象 ({@link refreshAllTargets}) を順に Refresh する。
+ * 1 件の失敗は他の Playlist の Refresh を妨げない。
  * `/admin/refresh` (キャッシュ強制無効化・再取得用) と CLI から使う。
  */
 export async function refreshAll(config: AppConfig): Promise<RefreshResult[]> {
   const results: RefreshResult[] = []
-  for (const entry of config.playlists) {
+  for (const playlistId of refreshAllTargets(config)) {
     // 直列実行にする: yt-dlp を同時に何本も立てて YouTube 側のレート制限を踏むのを避ける。
-    results.push(await refreshPlaylist(config, entry.playlistId))
+    results.push(await refreshPlaylist(config, playlistId))
   }
   return results
 }

@@ -4,9 +4,11 @@ import os from 'node:os'
 import path from 'node:path'
 import { test } from 'vitest'
 import type { AppConfig } from '../src/config'
+import { buildManifest, persistSlotState } from '../src/manifest-store'
 import {
   getManifestForClient,
   primeManifestCacheForTests,
+  refreshAll,
 } from '../src/refresh'
 import type { Manifest } from '../src/types'
 
@@ -85,4 +87,25 @@ test('getManifestForClient returns null when there is no cache and yt-dlp fails'
 
   assert.equal(result.manifest, null)
   assert.ok(result.error)
+})
+
+test('refreshAll targets playlistIds with persisted slot state when the allowlist is empty', async () => {
+  const config = baseConfig('unused', { playlists: [] })
+  // pnpm refresh CLI は Server と別プロセスで動きメモリキャッシュを共有しないため、
+  // refreshAllTargets の判定材料は Disk 上の Position Pool 状態でなければならない。
+  const { state } = buildManifest(
+    null,
+    'pl-seen-before',
+    100,
+    [{ id: 'v1', title: 'Track 1', duration: 100 }],
+    Date.now()
+  )
+  persistSlotState(config.dataDir, state)
+
+  const results = await refreshAll(config)
+
+  assert.ok(
+    results.some((r) => r.playlistId === 'pl-seen-before'),
+    'a playlistId with persisted slot state must still be refreshed without a predefined allowlist'
+  )
 })
