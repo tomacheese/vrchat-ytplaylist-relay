@@ -1,4 +1,5 @@
 import { Router } from 'express'
+import { isPlaylistAllowed } from '../config'
 import type { AppConfig } from '../config'
 import { getManifestForClient } from '../refresh'
 
@@ -13,8 +14,7 @@ export function manifestRouter(config: AppConfig): Router {
 
   router.get('/:playlistId/manifest.json', (req, res, next) => {
     const { playlistId } = req.params
-    const known = config.playlists.some((p) => p.playlistId === playlistId)
-    if (!known) {
+    if (!isPlaylistAllowed(config, playlistId)) {
       res.status(404).json({ error: 'unknown playlistId' })
       return
     }

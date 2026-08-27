@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import 'dotenv/config'
+import { logger } from './logger'
 import type { PlaylistConfigEntry, ServerConfig } from './types'
 
 export interface AppConfig {
@@ -34,12 +35,28 @@ export interface AppConfig {
   playlists: PlaylistConfigEntry[]
 }
 
+/**
+ * `config/playlists.json` を読み込む。ファイルが存在しない場合は allowlist 無効
+ * (`playlists: []`) として扱う (事前登録なしで任意の playlistId を要求可能にするため)。
+ * ファイルが存在するのに JSON 破損など他の理由で読み込めない場合は従来通りエラーにする。
+ */
 function readServerConfig(configPath: string): ServerConfig {
-  const raw = fs.readFileSync(configPath, 'utf8')
+  let raw: string
+  try {
+    raw = fs.readFileSync(configPath, 'utf8')
+  } catch (err) {
+    if (err instanceof Error && 'code' in err && err.code === 'ENOENT') {
+      logger.warn(
+        `No config file found at ${configPath}; allowlist is disabled (any playlistId is accepted)`
+      )
+      return { playlists: [] }
+    }
+    throw err
+  }
   const parsed = JSON.parse(raw) as ServerConfig
-  if (!Array.isArray(parsed.playlists) || parsed.playlists.length === 0) {
-    throw new Error(
-      `Config at ${configPath} must contain a non-empty "playlists" array`
+  if (!Array.isArray(parsed.playlists)) {
+    throw new TypeError(
+      `Config at ${configPath} must contain a "playlists" array`
     )
   }
   for (const entry of parsed.playlists) {
@@ -48,6 +65,11 @@ function readServerConfig(configPath: string): ServerConfig {
         `Config at ${configPath} contains a playlist entry without a valid "playlistId"`
       )
     }
+  }
+  if (parsed.playlists.length === 0) {
+    logger.warn(
+      `Config at ${configPath} has an empty "playlists" array; allowlist is disabled (any playlistId is accepted)`
+    )
   }
   return parsed
 }
@@ -115,4 +137,28 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
 export function maxSlotsFor(config: AppConfig, playlistId: string): number {
   const entry = config.playlists.find((p) => p.playlistId === playlistId)
   return entry?.maxSlots ?? config.defaultMaxSlots
+}
+
+// YouTube の playlistId (例: "PLxxxxxxxx") は英数字・`_`・`-` のみで構成される。
+// allowlist 無効時は任意の文字列がそのまま Position Pool のディレクトリ名
+// (`encodeURIComponent(playlistId)`) や yt-dlp の引数に渡るため、ここで弾いておかないと
+// "." だけの playlistId (`encodeURIComponent` で変化しない) が `path.join(dataDir, '..')` に
+// 化けて dataDir の外にファイルを読み書きできてしまう (path traversal)。
+const PLAYLIST_ID_PATTERN = /^[\w-]+$/
+
+/**
+ * playlistId が要求可能かどうかを判定する。
+ * フォーマット (`PLAYLIST_ID_PATTERN`) を満たさないものは常に false。
+ * それ以外は `config.playlists` が空 (allowlist 無効) なら true、そうでなければ一覧に
+ * 含まれる playlistId のみ true を返す。
+ */
+export function isPlaylistAllowed(
+  config: AppConfig,
+  playlistId: string
+): boolean {
+  if (!PLAYLIST_ID_PATTERN.test(playlistId)) return false
+  return (
+    config.playlists.length === 0 ||
+    config.playlists.some((p) => p.playlistId === playlistId)
+  )
 }

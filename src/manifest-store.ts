@@ -151,6 +151,21 @@ export function buildManifest(
   return { state, manifest }
 }
 
+/**
+ * これまでに一度でも Refresh され、Position Pool 状態 (slots.json) が永続化済みの
+ * playlistId 一覧を返す。allowlist 無効時の一括 Refresh (`refreshAll`) が対象を
+ * 決めるのに使う (`playlistDir` で `encodeURIComponent` してディレクトリ名にしているため
+ * 復元は `decodeURIComponent` で行う)。dataDir 自体が未作成 (一度も Refresh していない)
+ * 場合は空配列を返す。
+ */
+export function listKnownPlaylistIds(dataDir: string): string[] {
+  if (!fs.existsSync(dataDir)) return []
+  return fs
+    .readdirSync(dataDir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => decodeURIComponent(entry.name))
+}
+
 /** Refresh 失敗を Position Pool 状態に記録する (slot 対応表・generation は変更しない = 維持する)。 */
 export function recordFailure(
   dataDir: string,

@@ -8,14 +8,17 @@ yt-dlp で YouTube Playlist を取得し、VRChat World (`Assets/Tomachi/YamaPla
 ```bash
 pnpm install
 cp .env.example .env   # 必要に応じて編集
-cp config/playlists.json.example config/playlists.json   # 対象の Playlist を編集
 pnpm run build
 pnpm start
 # 開発時は pnpm run dev (tsx watch)
 ```
 
-`config/playlists.json` に対象の YouTube Playlist を列挙する。`ytdlp` は `YTDLP_PATH`
-(既定 `yt-dlp`、PATH 上のもの) を使う。
+`ytdlp` は `YTDLP_PATH` (既定 `yt-dlp`、PATH 上のもの) を使う。
+
+`config/playlists.json` は任意。無い場合は allowlist が無効になり、要求された任意の
+playlistId をそのまま取得・配信する (事前登録不要)。特定の Playlist だけに絞りたい場合や
+Playlist ごとに `maxSlots` を上書きしたい場合は `cp config/playlists.json.example
+config/playlists.json` して編集する。設定すると、一覧に無い playlistId は 404 になる。
 
 ## Media 配信方式 (`MEDIA_DELIVERY_MODE`)
 
@@ -45,7 +48,6 @@ docker build -t vrchat-ytplaylist-relay .
 docker run -d \
   --name vrchat-ytplaylist-relay \
   -p 8787:8787 \
-  -v "$(pwd)/config:/app/config:ro" \
   -v vrchat-ytplaylist-relay-data:/app/data \
   -e MEDIA_DELIVERY_MODE=proxy \
   -e ADMIN_TOKEN=<secret> \
@@ -57,6 +59,8 @@ docker run -d \
   (YouTube 側の抽出ロジック変化への追随が `proxy` モードの生命線のため)。
   `YTDLP_AUTO_UPDATE=0` で無効化できる。
 - `/app/data` (`DATA_DIR` / `MEDIA_CACHE_DIR` の既定位置) は Volume 化を推奨する。
+- allowlist (対象 Playlist の絞り込み) を使う場合のみ `-v
+  "$(pwd)/config:/app/config:ro"` で `config/playlists.json` をマウントする。
 
 ## テスト
 
