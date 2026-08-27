@@ -19,9 +19,14 @@ export interface AppConfig {
    * - "redirect": 従来通り youtube.com へ 302 Redirect するだけ (既定値)。
    * - "proxy": Backend 自身が yt-dlp で動画をダウンロード・キャッシュし、バイト列を直接配信する。
    *   VRChat 同梱の制限付き yt-dlp が googlevideo.com への直リンク解決に失敗する問題を回避できるが、
-   *   ffmpeg / 十分なディスク容量が必要になる。
+   *   ffmpeg / 十分なディスク容量が必要になる。ダウンロード完了まで応答をブロックするため、
+   *   Client 側の Timeout に間に合わないことがある。
+   * - "hybrid": キャッシュ済みなら "proxy" と同様にバイト列を直接配信し、未キャッシュ (または TTL 切れ)
+   *   なら応答をブロックせずダウンロードを裏で開始しつつ即座に "redirect" と同様の 302 応答を返す。
+   *   Client が Timeout 後に再リクエストしてきた頃にはダウンロードが完了している想定で、
+   *   "redirect" の即応性と "proxy" の 403 回避を両立させる。
    */
-  deliveryMode: 'redirect' | 'proxy'
+  deliveryMode: 'redirect' | 'proxy' | 'hybrid'
   /** "proxy" モードでダウンロードする動画の最大高さ (px)。YouTube 側のフォーマットから、これ以下で最高画質のものを選ぶ。 */
   mediaMaxHeight: number
   /** "proxy" モードでダウンロード済み動画ファイル・メタデータを保存するディレクトリ。 */
@@ -74,15 +79,17 @@ function readServerConfig(configPath: string): ServerConfig {
   return parsed
 }
 
-function readDeliveryMode(overrides: Partial<AppConfig>): 'redirect' | 'proxy' {
+function readDeliveryMode(
+  overrides: Partial<AppConfig>
+): 'redirect' | 'proxy' | 'hybrid' {
   const raw =
     overrides.deliveryMode ??
     // 空文字列 ("MEDIA_DELIVERY_MODE=" のような未設定相当の指定) も既定値扱いにするため || を使う。
     // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing
     (process.env.MEDIA_DELIVERY_MODE?.trim() || 'redirect')
-  if (raw !== 'redirect' && raw !== 'proxy') {
+  if (raw !== 'redirect' && raw !== 'proxy' && raw !== 'hybrid') {
     throw new Error(
-      `MEDIA_DELIVERY_MODE must be "redirect" or "proxy" (got: ${raw})`
+      `MEDIA_DELIVERY_MODE must be "redirect", "proxy" or "hybrid" (got: ${raw})`
     )
   }
   return raw

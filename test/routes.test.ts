@@ -143,6 +143,118 @@ test.skipIf(process.env.RUN_INTEGRATION !== '1')(
   }
 )
 
+test('GET /:playlistId/:position.mp4 in hybrid mode falls back to a YouTube redirect when uncached', async () => {
+  const hybridDataDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'yrp-route-test-hybrid-')
+  )
+  const hybridConfig: AppConfig = {
+    ...config,
+    dataDir: hybridDataDir,
+    mediaCacheDir: path.join(hybridDataDir, 'cache'),
+    deliveryMode: 'hybrid',
+    // バックグラウンドダウンロードは失敗させて即終わらせる (redirect フォールバック自体の検証が目的のため)。
+    ytdlpPath: 'yt-dlp-does-not-exist',
+  }
+  const { state, manifest } = buildManifest(
+    null,
+    'pl1',
+    100,
+    [{ id: 'v1', title: 'Track 1', duration: 100 }],
+    Date.now()
+  )
+  persistSlotState(hybridDataDir, state)
+  primeManifestCacheForTests('pl1', manifest)
+
+  const app = createApp(hybridConfig)
+  let hybridServer: Server | undefined
+  try {
+    hybridServer = await new Promise<Server>((resolve) => {
+      const s = app.listen(0, '127.0.0.1', () => {
+        resolve(s)
+      })
+    })
+    const address = hybridServer.address() as AddressInfo
+    const res = await fetch(`http://127.0.0.1:${address.port}/pl1/0.mp4`, {
+      redirect: 'manual',
+    })
+    assert.equal(res.status, 302)
+    assert.equal(
+      res.headers.get('location'),
+      'https://www.youtube.com/watch?v=v1'
+    )
+  } finally {
+    if (hybridServer) {
+      const s = hybridServer
+      await new Promise<void>((resolve, reject) => {
+        s.close((err) => {
+          if (err) reject(err)
+          else resolve()
+        })
+      })
+    }
+    fs.rmSync(hybridDataDir, { recursive: true, force: true })
+  }
+})
+
+test('GET /:playlistId/:position.mp4 in hybrid mode serves cached bytes directly when fresh', async () => {
+  const hybridDataDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'yrp-route-test-hybrid-cached-')
+  )
+  const cacheDir = path.join(hybridDataDir, 'cache')
+  fs.mkdirSync(cacheDir, { recursive: true })
+  fs.writeFileSync(path.join(cacheDir, 'v1.mp4'), 'dummy video bytes')
+  fs.writeFileSync(
+    path.join(cacheDir, 'v1.meta.json'),
+    JSON.stringify({
+      videoId: 'v1',
+      sizeBytes: 18,
+      downloadedAt: Date.now(),
+      lastAccessedAt: Date.now(),
+    })
+  )
+  const hybridConfig: AppConfig = {
+    ...config,
+    dataDir: hybridDataDir,
+    mediaCacheDir: cacheDir,
+    deliveryMode: 'hybrid',
+  }
+  const { state, manifest } = buildManifest(
+    null,
+    'pl1',
+    100,
+    [{ id: 'v1', title: 'Track 1', duration: 100 }],
+    Date.now()
+  )
+  persistSlotState(hybridDataDir, state)
+  primeManifestCacheForTests('pl1', manifest)
+
+  const app = createApp(hybridConfig)
+  let hybridServer: Server | undefined
+  try {
+    hybridServer = await new Promise<Server>((resolve) => {
+      const s = app.listen(0, '127.0.0.1', () => {
+        resolve(s)
+      })
+    })
+    const address = hybridServer.address() as AddressInfo
+    const res = await fetch(`http://127.0.0.1:${address.port}/pl1/0.mp4`)
+    assert.equal(res.status, 200)
+    const body = await res.text()
+    assert.equal(body, 'dummy video bytes')
+  } finally {
+    if (hybridServer) {
+      const s = hybridServer
+      await new Promise<void>((resolve, reject) => {
+        s.close((err) => {
+          if (err) reject(err)
+          else resolve()
+        })
+      })
+    }
+    fs.rmSync(hybridDataDir, { recursive: true, force: true })
+  }
+})
+
 test('GET /unknownpl/manifest.json returns 404, not 401 (route isolation from admin auth)', async () => {
   const res = await fetch(`${baseUrl}/unknownpl/manifest.json`)
   assert.equal(res.status, 404)

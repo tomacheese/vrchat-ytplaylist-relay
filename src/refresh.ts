@@ -68,9 +68,10 @@ function runRefresh(
         `refreshed ${playlistId}: generation=${state.generation} tracks=${entries.length}`
       )
 
-      if (config.deliveryMode === 'proxy') {
+      if (config.deliveryMode === 'proxy' || config.deliveryMode === 'hybrid') {
         // Response Blocking を避けるため await しない。失敗は prefetchAll 内部でログするだけで、
-        // 冷キャッシュ時は Media Endpoint 側 (getOrDownload) が改めてダウンロードするため機能に影響しない。
+        // 冷キャッシュ時は Media Endpoint 側 (getOrDownload / hybrid の redirect フォールバック) が
+        // 改めてダウンロードするため機能に影響しない。
         // 末尾の .catch() で例外を処理しているため no-floating-promises 上も未処理 Promise 扱いにならない。
         prefetchAll(
           config,
