@@ -7,6 +7,13 @@
       "matchStrings": ["ARG YTDLP_VERSION=(?<currentValue>.*)\\n"],
       "datasourceTemplate": "github-releases",
       "depNameTemplate": "yt-dlp/yt-dlp"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^Dockerfile$/"],
+      "matchStrings": ["ARG DENO_VERSION=(?<currentValue>.*)\\n"],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "denoland/deno"
     }
   ]
 }

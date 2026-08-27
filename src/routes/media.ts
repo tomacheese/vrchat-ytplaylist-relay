@@ -10,6 +10,8 @@ import {
   triggerBackgroundDownload,
 } from '../media-cache'
 import { resolveVideoIdForPosition } from '../refresh'
+import { logger } from '../logger'
+import { YtdlpError } from '../ytdlp'
 
 const POSITION_PATTERN = /^(\d+)\.mp4$/
 
@@ -97,6 +99,9 @@ export function mediaRouter(config: AppConfig): Router {
             res.status(502).json({
               error: `failed to fetch video: ${(err as Error).message}`,
             })
+            if (err instanceof YtdlpError && err.stderr.length > 0) {
+              logger.error(err.stderr)
+            }
           })
       })
       .catch((err: unknown) => {
