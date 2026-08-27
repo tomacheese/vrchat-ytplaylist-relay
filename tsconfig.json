@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    // ESLint / typecheck (このファイル) は vitest (ESM 専用パッケージ) の型解決のため Bundler 解決を使う。
+    // 実ビルド (dist への出力) は tsconfig.build.json で CommonJS / Node 解決に上書きする。
+    "module": "Preserve",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2024"],
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "declaration": false,
+    "sourceMap": true,
+    "newLine": "lf",
+    "noEmit": true
+  },
+  "include": ["src", "test", "vitest.config.mts"]
+}

@@ -1,0 +1,3 @@
+{
+  "ignores": ["@types/node", "@types/express", "only-allow", "cross-env", "run-z"]
+}

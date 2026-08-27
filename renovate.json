@@ -1,0 +1,12 @@
+{
+  "extends": ["github>book000/templates//renovate/base-public"],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^Dockerfile$/"],
+      "matchStrings": ["ARG YTDLP_VERSION=(?<currentValue>.*)\\n"],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "yt-dlp/yt-dlp"
+    }
+  ]
+}

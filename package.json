@@ -1,0 +1,55 @@
+{
+  "name": "vrchat-ytplaylist-relay",
+  "version": "0.1.0",
+  "description": "Backend that fetches YouTube playlists via yt-dlp and relays them as VRChat-consumable manifests (player-implementation agnostic).",
+  "homepage": "https://github.com/tomacheese/vrchat-ytplaylist-relay",
+  "bugs": {
+    "url": "https://github.com/tomacheese/vrchat-ytplaylist-relay/issues"
+  },
+  "license": "MIT",
+  "author": "Tomachi",
+  "private": true,
+  "type": "commonjs",
+  "repository": {
+    "url": "git@github.com:tomacheese/vrchat-ytplaylist-relay.git",
+    "type": "git"
+  },
+  "packageManager": "pnpm@11.23.0+sha512.f00082e5b283a199b74e079da28d155c008fe232f44c8a06ea7ddfa014ecf719fc362f790ecc67b28106ddac2afb24c49a9a079159da560b2ce7d1e98efd11af",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "preinstall": "npx only-allow pnpm",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/index.js",
+    "dev": "tsx watch src/index.ts",
+    "refresh": "tsx src/cli.ts refresh",
+    "lint": "run-z lint:prettier,lint:eslint,lint:tsc",
+    "lint:prettier": "prettier --check src test",
+    "lint:eslint": "eslint . -c eslint.config.mjs",
+    "lint:tsc": "tsc -p tsconfig.json --noEmit",
+    "fix": "run-z fix:prettier,fix:eslint",
+    "fix:prettier": "prettier --write src test",
+    "fix:eslint": "eslint . -c eslint.config.mjs --fix",
+    "test": "vitest run",
+    "test:integration": "cross-env RUN_INTEGRATION=1 vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2"
+  },
+  "devDependencies": {
+    "@book000/eslint-config": "1.16.43",
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.7.5",
+    "cross-env": "10.1.0",
+    "eslint": "10.9.0",
+    "only-allow": "^1.2.1",
+    "prettier": "3.9.6",
+    "run-z": "2.1.0",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.3",
+    "vitest": "4.1.11"
+  }
+}
