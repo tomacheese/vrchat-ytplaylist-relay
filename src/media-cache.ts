@@ -116,8 +116,7 @@ function runEviction(cacheDir: string, maxBytes: number): void {
   }
 }
 
-/** メタデータとファイルの両方が揃っていて、かつ TTL 内かどうかを判定する。 */
-/** メタデータとファイルの両方が揃っているかどうかを判定する (TTL は見ない)。 */
+/** TTL は見ない。 */
 function hasCompletedEntry(
   meta: CacheEntryMeta | null,
   filePath: string
@@ -256,21 +255,24 @@ export function triggerBackgroundDownload(
  * そのまま返しつつ、裏で {@link triggerBackgroundDownload} を起動する
  * (次回以降のリクエストから新しいファイルに切り替わる)。一度もダウンロードが完了していない
  * 場合のみ `null` を返す (呼び出し元は従来通り「キャッシュなし」として扱う)。
+ *
+ * {@link peekFreshCache} / {@link peekStaleCache} を素直に呼ぶと meta 読み込みや
+ * `persistMeta` が二重に走るため、ここでは meta を 1 回だけ読んでどちらの判定にも使い回す。
  */
 export function getFreshOrStale(
   config: AppConfig,
   videoId: string
 ): string | null {
-  const fresh = peekFreshCache(config, videoId)
-  if (fresh) return fresh
+  const filePath = cacheFilePath(config.mediaCacheDir, videoId)
+  const now = Date.now()
+  const meta = loadMeta(config.mediaCacheDir, videoId)
+  if (!hasCompletedEntry(meta, filePath)) return null
 
-  const stale = peekStaleCache(config, videoId)
-  if (stale) {
+  persistMeta(config.mediaCacheDir, { ...meta, lastAccessedAt: now })
+  if (now - meta.downloadedAt >= config.mediaCacheTtlMs) {
     triggerBackgroundDownload(config, videoId)
-    return stale
   }
-
-  return null
+  return filePath
 }
 
 /**

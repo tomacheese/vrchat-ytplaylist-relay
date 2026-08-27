@@ -40,10 +40,8 @@ Client が Timeout 後に再リクエストしてくる頃にはキャッシュ�
 切り替わる想定の折衷案。`proxy` / `hybrid` はいずれも YouTube 動画データを Backend にダウンロード・
 再配信するため、利用規約上のリスクを運用者が許容していることが前提。
 
-`proxy` / `hybrid` はいずれも、キャッシュが `MEDIA_CACHE_TTL_MS` を超えて再ダウンロードが走って
-いる間も、直前まで有効だった完了済みキャッシュファイルを Seek 可能な状態のまま配信し続ける
-(stale-while-revalidate)。`proxy` はブロックせず、`hybrid` は `redirect` フォールバックせずに
-即座に配信し、再ダウンロードが完了すると次回以降のリクエストから新しいファイルに切り替わる。
+`proxy` / `hybrid` はいずれも、キャッシュが `MEDIA_CACHE_TTL_MS` を超えて再ダウンロードが走っている間も、直前まで有効だった完了済みキャッシュファイルを Seek 可能な状態のまま配信し続ける (stale-while-revalidate)。
+`proxy` はブロックせず、`hybrid` は `redirect` フォールバックせずに即座に配信し、再ダウンロードが完了すると次回以降のリクエストから新しいファイルに切り替わる。
 
 `proxy` / `hybrid` 関連の設定 (`.env.example` 参照): `MEDIA_MAX_HEIGHT` / `MEDIA_CACHE_DIR` /
 `MEDIA_CACHE_MAX_BYTES` / `MEDIA_CACHE_TTL_MS` / `MEDIA_DOWNLOAD_TIMEOUT_MS`。

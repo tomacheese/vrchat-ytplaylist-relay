@@ -267,7 +267,7 @@ test('GET /:playlistId/:position.mp4 in proxy mode serves stale cached bytes dir
     JSON.stringify({
       videoId: 'v1',
       sizeBytes: 18,
-      // TTL (config.mediaCacheTtlMs = 6h) を超えた stale なエントリにする。
+      // config.mediaCacheTtlMs を超えた stale なエントリにする。
       downloadedAt: Date.now() - 7 * 60 * 60 * 1000,
       lastAccessedAt: Date.now() - 7 * 60 * 60 * 1000,
     })
