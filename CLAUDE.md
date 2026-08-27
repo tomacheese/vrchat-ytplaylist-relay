@@ -15,7 +15,7 @@ Claude Code の作業方針とプロジェクト固有ルールを示す。
 - 背景: VRChat 同梱の制限付き yt-dlp が googlevideo.com 直リンクの解決に失敗し 403 になる既知の問題への対策
 - 主な機能:
   - yt-dlp による YouTube Playlist の取得と `manifest.json` の公開
-  - Media Endpoint (`GET /:playlistId/:position.mp4`) — `redirect` (YouTube へ 302) / `proxy` (yt-dlp + ffmpeg でダウンロード・キャッシュして直接配信) の 2 方式
+  - Media Endpoint (`GET /:playlistId/:position.mp4`) — `redirect` (YouTube へ 302) / `proxy` (yt-dlp + ffmpeg でダウンロード・キャッシュして直接配信) / `hybrid` (キャッシュ済みは proxy 同様に配信、未キャッシュ時はバックグラウンドでダウンロードを開始しつつ即座に redirect 同様の 302 を返す) の 3 方式
   - Position Pool によるスロット↔動画ID の安定対応 (Playlist 更新でも VRCUrl を焼き込み直さずに済む)
 
 ## 重要ルール
@@ -69,7 +69,7 @@ pnpm refresh
 - `src/config.ts`: 環境変数 / `config/playlists.json` からの設定読み込み
 - `src/ytdlp.ts`: yt-dlp 実行 (Playlist 取得 / 動画ダウンロード)
 - `src/manifest-store.ts`: Position Pool (スロット↔動画ID) の構築・永続化
-- `src/media-cache.ts`: `proxy` モードのダウンロード・キャッシュ・LRU Eviction・Prefetch
+- `src/media-cache.ts`: `proxy` / `hybrid` モードのダウンロード・キャッシュ・LRU Eviction・Prefetch
 - `src/refresh.ts`: Playlist の定期リフレッシュとメモリキャッシュ
 - `src/routes/`: `health` / `admin` / `manifest` / `media` / `root` の各 Router
 - `Assets/Tomachi/YamaPlayerRemotePlaylist` (別リポジトリ): この Backend を消費する VRChat World 側実装
@@ -117,6 +117,6 @@ pnpm refresh
 - 設定値は環境変数または設定ファイル経由で受け取り、ソースにハードコードしない。
 
 ## リポジトリ固有
-- `proxy` モードは YouTube 動画データを Backend にダウンロード・再配信するため、利用規約上のリスクを運用者が許容していることが前提。
+- `proxy` / `hybrid` モードは YouTube 動画データを Backend にダウンロード・再配信するため、利用規約上のリスクを運用者が許容していることが前提。
 - `config/playlists.json` に対象の YouTube Playlist を列挙する。
 - `data/` はアプリケーション実行時データ (Position Pool 状態・Media キャッシュ) の永続化先で、Git 管理対象外。
