@@ -2,7 +2,6 @@
 import { loadConfig } from './config'
 import { logger } from './logger'
 import { refreshAll, refreshPlaylist } from './refresh'
-import { YtdlpError } from './ytdlp'
 
 /**
  * SSH 経由の管理操作用 CLI。
@@ -42,8 +41,5 @@ async function main() {
 
 main().catch((err: unknown) => {
   logger.error(err instanceof Error ? (err.stack ?? err.message) : String(err))
-  if (err instanceof YtdlpError && err.stderr.length > 0) {
-    logger.error(err.stderr)
-  }
   process.exitCode = 1
 })
