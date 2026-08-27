@@ -48,13 +48,13 @@ export function mediaRouter(config: AppConfig): Router {
   router.get('/:playlistId/:positionFile', mediaRateLimit, (req, res) => {
     const { playlistId, positionFile } = req.params
     if (!isPlaylistAllowed(config, playlistId)) {
-      res.status(404).send('unknown playlistId')
+      res.status(404).json({ error: 'unknown playlistId' })
       return
     }
 
     const match = POSITION_PATTERN.exec(positionFile)
     if (!match) {
-      res.status(404).send('invalid position')
+      res.status(404).json({ error: 'invalid position' })
       return
     }
     const position = Number(match[1])
@@ -67,7 +67,7 @@ export function mediaRouter(config: AppConfig): Router {
           // 一時的な Refresh 失敗 (yt-dlp エラーなど) は 502、position が本当に存在しない
           // 場合のみ 404 を返す (`getOrDownload` 失敗時の 502 と揃える)。
           const status = resolved.reason === 'refresh_failed' ? 502 : 404
-          res.status(status).send(resolved.error)
+          res.status(status).json({ error: resolved.error })
           return
         }
         const { videoId } = resolved
@@ -94,15 +94,15 @@ export function mediaRouter(config: AppConfig): Router {
             res.sendFile(path.resolve(filePath))
           })
           .catch((err: unknown) => {
-            res
-              .status(502)
-              .send(`failed to fetch video: ${(err as Error).message}`)
+            res.status(502).json({
+              error: `failed to fetch video: ${(err as Error).message}`,
+            })
           })
       })
       .catch((err: unknown) => {
-        res
-          .status(502)
-          .send(`failed to resolve position: ${(err as Error).message}`)
+        res.status(502).json({
+          error: `failed to resolve position: ${(err as Error).message}`,
+        })
       })
   })
 

@@ -154,11 +154,7 @@ test('resolveVideoIdForPosition resolves the videoId once slot state is persiste
   )
   persistSlotState(config.dataDir, state)
 
-  const result = await resolveVideoIdForPosition(
-    config,
-    'pl-known-position',
-    0
-  )
+  const result = await resolveVideoIdForPosition(config, 'pl-known-position', 0)
 
   assert.deepEqual(result, { videoId: 'v1' })
 })
@@ -179,11 +175,7 @@ test('resolveVideoIdForPosition does not retry refresh within manifestCacheTtlMs
   // position 1 は存在しない。直近 Refresh 済み (かつ成功) のため Refresh は再試行されないはずで、
   // その場合 error は必ず 'unknown position' になる (Refresh が走れば
   // 'yt-dlp-does-not-exist' に起因する別のエラーメッセージになるため区別できる)。
-  const result = await resolveVideoIdForPosition(
-    config,
-    'pl-recent-refresh',
-    1
-  )
+  const result = await resolveVideoIdForPosition(config, 'pl-recent-refresh', 1)
 
   assert.deepEqual(result, { error: 'unknown position', reason: 'not_found' })
 })
@@ -206,11 +198,7 @@ test('resolveVideoIdForPosition surfaces the persisted lastError when a recent r
 
   // position 1 は存在せず、直近の Refresh は失敗記録 (lastRefreshOk: false) が付いている。
   // 再試行はしないが、握りつぶさず lastError をそのまま返すはず。
-  const result = await resolveVideoIdForPosition(
-    config,
-    'pl-recent-failure',
-    1
-  )
+  const result = await resolveVideoIdForPosition(config, 'pl-recent-failure', 1)
 
   assert.deepEqual(result, {
     error: 'network unreachable',
