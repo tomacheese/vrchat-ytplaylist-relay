@@ -116,15 +116,22 @@ function runEviction(cacheDir: string, maxBytes: number): void {
   }
 }
 
-/** メタデータとファイルの両方が揃っていて、かつ TTL 内かどうかを判定する。 */
+/** TTL は見ない。 */
+function hasCompletedEntry(
+  meta: CacheEntryMeta | null,
+  filePath: string
+): meta is CacheEntryMeta {
+  if (!meta) return false
+  return fs.existsSync(filePath)
+}
+
 function isFresh(
   meta: CacheEntryMeta | null,
   filePath: string,
   ttlMs: number,
   now: number
 ): meta is CacheEntryMeta {
-  if (!meta) return false
-  if (!fs.existsSync(filePath)) return false
+  if (!hasCompletedEntry(meta, filePath)) return false
   return now - meta.downloadedAt < ttlMs
 }
 
@@ -141,6 +148,24 @@ export function peekFreshCache(
   const now = Date.now()
   const meta = loadMeta(config.mediaCacheDir, videoId)
   if (!isFresh(meta, filePath, config.mediaCacheTtlMs, now)) return null
+  persistMeta(config.mediaCacheDir, { ...meta, lastAccessedAt: now })
+  return filePath
+}
+
+/**
+ * videoId に対応するキャッシュ済み動画ファイルが (ダウンロードが一度でも完了していれば) TTL を
+ * 無視してその絶対パスを返す。一度もダウンロードが完了していない場合のみ `null` を返す。
+ * TTL 切れで再ダウンロード中でも、直前まで有効だった完了済みファイルを配信し続ける
+ * ("stale-while-revalidate") ために {@link getFreshOrStale} が使う。
+ */
+export function peekStaleCache(
+  config: AppConfig,
+  videoId: string
+): string | null {
+  const filePath = cacheFilePath(config.mediaCacheDir, videoId)
+  const now = Date.now()
+  const meta = loadMeta(config.mediaCacheDir, videoId)
+  if (!hasCompletedEntry(meta, filePath)) return null
   persistMeta(config.mediaCacheDir, { ...meta, lastAccessedAt: now })
   return filePath
 }
@@ -222,6 +247,32 @@ export function triggerBackgroundDownload(
       logger.error(err.stderr)
     }
   })
+}
+
+/**
+ * videoId に対応するキャッシュ済み動画ファイルを、新鮮 (TTL 内) ならそのまま返す。
+ * TTL 切れでも、直前まで有効だった完了済みファイルがあれば ("stale-while-revalidate") それを
+ * そのまま返しつつ、裏で {@link triggerBackgroundDownload} を起動する
+ * (次回以降のリクエストから新しいファイルに切り替わる)。一度もダウンロードが完了していない
+ * 場合のみ `null` を返す (呼び出し元は従来通り「キャッシュなし」として扱う)。
+ *
+ * {@link peekFreshCache} / {@link peekStaleCache} を素直に呼ぶと meta 読み込みや
+ * `persistMeta` が二重に走るため、ここでは meta を 1 回だけ読んでどちらの判定にも使い回す。
+ */
+export function getFreshOrStale(
+  config: AppConfig,
+  videoId: string
+): string | null {
+  const filePath = cacheFilePath(config.mediaCacheDir, videoId)
+  const now = Date.now()
+  const meta = loadMeta(config.mediaCacheDir, videoId)
+  if (!hasCompletedEntry(meta, filePath)) return null
+
+  persistMeta(config.mediaCacheDir, { ...meta, lastAccessedAt: now })
+  if (now - meta.downloadedAt >= config.mediaCacheTtlMs) {
+    triggerBackgroundDownload(config, videoId)
+  }
+  return filePath
 }
 
 /**

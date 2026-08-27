@@ -255,6 +255,130 @@ test('GET /:playlistId/:position.mp4 in hybrid mode serves cached bytes directly
   }
 })
 
+test('GET /:playlistId/:position.mp4 in proxy mode serves stale cached bytes directly instead of blocking on re-download', async () => {
+  const proxyDataDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'yrp-route-test-proxy-stale-')
+  )
+  const cacheDir = path.join(proxyDataDir, 'cache')
+  fs.mkdirSync(cacheDir, { recursive: true })
+  fs.writeFileSync(path.join(cacheDir, 'v1.mp4'), 'dummy video bytes')
+  fs.writeFileSync(
+    path.join(cacheDir, 'v1.meta.json'),
+    JSON.stringify({
+      videoId: 'v1',
+      sizeBytes: 18,
+      // config.mediaCacheTtlMs を超えた stale なエントリにする。
+      downloadedAt: Date.now() - 7 * 60 * 60 * 1000,
+      lastAccessedAt: Date.now() - 7 * 60 * 60 * 1000,
+    })
+  )
+  const proxyConfig: AppConfig = {
+    ...config,
+    dataDir: proxyDataDir,
+    mediaCacheDir: cacheDir,
+    deliveryMode: 'proxy',
+    // 裏の再ダウンロードは失敗させて即終わらせる (stale 配信自体の検証が目的のため)。
+    ytdlpPath: 'yt-dlp-does-not-exist',
+  }
+  const { state, manifest } = buildManifest(
+    null,
+    'pl1',
+    100,
+    [{ id: 'v1', title: 'Track 1', duration: 100 }],
+    Date.now()
+  )
+  persistSlotState(proxyDataDir, state)
+  primeManifestCacheForTests('pl1', manifest)
+
+  const app = createApp(proxyConfig)
+  let proxyServer: Server | undefined
+  try {
+    proxyServer = await new Promise<Server>((resolve) => {
+      const s = app.listen(0, '127.0.0.1', () => {
+        resolve(s)
+      })
+    })
+    const address = proxyServer.address() as AddressInfo
+    const res = await fetch(`http://127.0.0.1:${address.port}/pl1/0.mp4`)
+    assert.equal(res.status, 200)
+    const body = await res.text()
+    assert.equal(body, 'dummy video bytes')
+  } finally {
+    if (proxyServer) {
+      const s = proxyServer
+      await new Promise<void>((resolve, reject) => {
+        s.close((err) => {
+          if (err) reject(err)
+          else resolve()
+        })
+      })
+    }
+    fs.rmSync(proxyDataDir, { recursive: true, force: true })
+  }
+})
+
+test('GET /:playlistId/:position.mp4 in hybrid mode serves stale cached bytes directly instead of falling back to redirect', async () => {
+  const hybridDataDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'yrp-route-test-hybrid-stale-')
+  )
+  const cacheDir = path.join(hybridDataDir, 'cache')
+  fs.mkdirSync(cacheDir, { recursive: true })
+  fs.writeFileSync(path.join(cacheDir, 'v1.mp4'), 'dummy video bytes')
+  fs.writeFileSync(
+    path.join(cacheDir, 'v1.meta.json'),
+    JSON.stringify({
+      videoId: 'v1',
+      sizeBytes: 18,
+      downloadedAt: Date.now() - 7 * 60 * 60 * 1000,
+      lastAccessedAt: Date.now() - 7 * 60 * 60 * 1000,
+    })
+  )
+  const hybridConfig: AppConfig = {
+    ...config,
+    dataDir: hybridDataDir,
+    mediaCacheDir: cacheDir,
+    deliveryMode: 'hybrid',
+    ytdlpPath: 'yt-dlp-does-not-exist',
+  }
+  const { state, manifest } = buildManifest(
+    null,
+    'pl1',
+    100,
+    [{ id: 'v1', title: 'Track 1', duration: 100 }],
+    Date.now()
+  )
+  persistSlotState(hybridDataDir, state)
+  primeManifestCacheForTests('pl1', manifest)
+
+  const app = createApp(hybridConfig)
+  let hybridServer: Server | undefined
+  try {
+    hybridServer = await new Promise<Server>((resolve) => {
+      const s = app.listen(0, '127.0.0.1', () => {
+        resolve(s)
+      })
+    })
+    const address = hybridServer.address() as AddressInfo
+    const res = await fetch(`http://127.0.0.1:${address.port}/pl1/0.mp4`, {
+      redirect: 'manual',
+    })
+    assert.equal(res.status, 200)
+    const body = await res.text()
+    assert.equal(body, 'dummy video bytes')
+  } finally {
+    if (hybridServer) {
+      const s = hybridServer
+      await new Promise<void>((resolve, reject) => {
+        s.close((err) => {
+          if (err) reject(err)
+          else resolve()
+        })
+      })
+    }
+    fs.rmSync(hybridDataDir, { recursive: true, force: true })
+  }
+})
+
 test('GET /unknownpl/manifest.json returns 404, not 401 (route isolation from admin auth)', async () => {
   const res = await fetch(`${baseUrl}/unknownpl/manifest.json`)
   assert.equal(res.status, 404)
