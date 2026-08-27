@@ -11,7 +11,7 @@ import {
   recordFailure,
 } from './manifest-store'
 import type { Manifest } from './types'
-import { fetchPlaylistEntries } from './ytdlp'
+import { fetchPlaylistEntries, YtdlpError } from './ytdlp'
 
 const refreshMutex = new KeyedMutex()
 
@@ -92,6 +92,9 @@ function runRefresh(
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       logger.error(`refresh failed for ${playlistId}: ${message}`)
+      if (err instanceof YtdlpError && err.stderr.length > 0) {
+        logger.error(err.stderr)
+      }
       recordFailure(config.dataDir, playlistId, maxSlots, message, now)
       return { playlistId, ok: false, error: message }
     }

@@ -4,7 +4,7 @@ import path from 'node:path'
 import type { AppConfig } from './config'
 import { KeyedMutex } from './lock'
 import { logger } from './logger'
-import { downloadVideo } from './ytdlp'
+import { downloadVideo, YtdlpError } from './ytdlp'
 
 /** Cache の同時ダウンロードを videoId 単位で直列化する ("proxy" モードで同じ動画への同時要求が二重ダウンロードするのを防ぐ)。 */
 const downloadMutex = new KeyedMutex()
@@ -218,6 +218,9 @@ export function triggerBackgroundDownload(
     logger.warn(
       `background download failed for video ${videoId}: ${(err as Error).message}`
     )
+    if (err instanceof YtdlpError && err.stderr.length > 0) {
+      logger.error(err.stderr)
+    }
   })
 }
 
@@ -241,6 +244,9 @@ export async function prefetchAll(
         logger.warn(
           `prefetch failed for video ${videoId}: ${(err as Error).message}`
         )
+        if (err instanceof YtdlpError && err.stderr.length > 0) {
+          logger.error(err.stderr)
+        }
       }
     }
   }
