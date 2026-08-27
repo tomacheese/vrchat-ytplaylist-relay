@@ -9,7 +9,7 @@ import {
   peekFreshCache,
   triggerBackgroundDownload,
 } from '../media-cache'
-import { loadSlotState } from '../manifest-store'
+import { resolveVideoIdForPosition } from '../refresh'
 
 const POSITION_PATTERN = /^(\d+)\.mp4$/
 
@@ -26,6 +26,9 @@ function redirectToYoutube(res: Response, videoId: string): void {
 
 /**
  * GET /{playlistId}/{position}.mp4
+ *
+ * Position Pool 状態に対象 position が無い場合 (初回リクエストなど) は、Manifest Endpoint と
+ * 同様に yt-dlp Refresh を自動的に試みてから再解決する (`resolveVideoIdForPosition`)。
  *
  * `config.deliveryMode` により配信方式を切り替える:
  * - "redirect" (既定値): 動画バイト列を配信せず、解決した YouTube 動画へ 302 Redirect するだけ。
@@ -45,48 +48,61 @@ export function mediaRouter(config: AppConfig): Router {
   router.get('/:playlistId/:positionFile', mediaRateLimit, (req, res) => {
     const { playlistId, positionFile } = req.params
     if (!isPlaylistAllowed(config, playlistId)) {
-      res.status(404).send('unknown playlistId')
+      res.status(404).json({ error: 'unknown playlistId' })
       return
     }
 
     const match = POSITION_PATTERN.exec(positionFile)
     if (!match) {
-      res.status(404).send('invalid position')
+      res.status(404).json({ error: 'invalid position' })
       return
     }
     const position = Number(match[1])
 
-    const state = loadSlotState(config.dataDir, playlistId)
-    const videoId = state?.slotToVideoId[String(position)]
-    if (!videoId) {
-      res.status(404).send('unknown position')
-      return
-    }
-
-    if (config.deliveryMode === 'redirect') {
-      redirectToYoutube(res, videoId)
-      return
-    }
-
-    if (config.deliveryMode === 'hybrid') {
-      const cachedPath = peekFreshCache(config, videoId)
-      if (cachedPath) {
-        res.sendFile(path.resolve(cachedPath))
-        return
-      }
-      triggerBackgroundDownload(config, videoId)
-      redirectToYoutube(res, videoId)
-      return
-    }
-
-    // "proxy": Router に渡す関数自体は async にせず Promise Chain の末尾 .catch() でエラーを
+    // Router に渡す関数自体は async にせず Promise Chain の末尾 .catch() でエラーを
     // 処理する (Express 4 のハンドラーは void を期待するため。no-misused-promises 対策)。
-    getOrDownload(config, videoId)
-      .then((filePath) => {
-        res.sendFile(path.resolve(filePath))
+    resolveVideoIdForPosition(config, playlistId, position)
+      .then((resolved) => {
+        if ('error' in resolved) {
+          // 一時的な Refresh 失敗 (yt-dlp エラーなど) は 502、position が本当に存在しない
+          // 場合のみ 404 を返す (`getOrDownload` 失敗時の 502 と揃える)。
+          const status = resolved.reason === 'refresh_failed' ? 502 : 404
+          res.status(status).json({ error: resolved.error })
+          return
+        }
+        const { videoId } = resolved
+
+        if (config.deliveryMode === 'redirect') {
+          redirectToYoutube(res, videoId)
+          return
+        }
+
+        if (config.deliveryMode === 'hybrid') {
+          const cachedPath = peekFreshCache(config, videoId)
+          if (cachedPath) {
+            res.sendFile(path.resolve(cachedPath))
+            return
+          }
+          triggerBackgroundDownload(config, videoId)
+          redirectToYoutube(res, videoId)
+          return
+        }
+
+        // "proxy"
+        getOrDownload(config, videoId)
+          .then((filePath) => {
+            res.sendFile(path.resolve(filePath))
+          })
+          .catch((err: unknown) => {
+            res.status(502).json({
+              error: `failed to fetch video: ${(err as Error).message}`,
+            })
+          })
       })
       .catch((err: unknown) => {
-        res.status(502).send(`failed to fetch video: ${(err as Error).message}`)
+        res.status(502).json({
+          error: `failed to resolve position: ${(err as Error).message}`,
+        })
       })
   })
 

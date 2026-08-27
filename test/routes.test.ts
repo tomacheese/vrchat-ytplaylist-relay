@@ -260,6 +260,59 @@ test('GET /unknownpl/manifest.json returns 404, not 401 (route isolation from ad
   assert.equal(res.status, 404)
 })
 
+test('GET /:playlistId/:position.mp4 triggers a refresh fallback when slot state does not exist yet', async () => {
+  const coldDataDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'yrp-route-test-cold-')
+  )
+  const coldConfig: AppConfig = {
+    ...config,
+    dataDir: coldDataDir,
+    playlists: [],
+    // 実 yt-dlp を起動させず即座に失敗させる (Refresh フォールバックが
+    // 呼ばれること自体を検証したいため、成功可否は問わない)。
+    ytdlpPath: 'yt-dlp-does-not-exist',
+    ytdlpTimeoutMs: 1000,
+  }
+  const app = createApp(coldConfig)
+  let coldServer: Server | undefined
+  try {
+    coldServer = await new Promise<Server>((resolve) => {
+      const s = app.listen(0, '127.0.0.1', () => {
+        resolve(s)
+      })
+    })
+    const address = coldServer.address() as AddressInfo
+    const res = await fetch(
+      `http://127.0.0.1:${address.port}/never-refreshed-playlist/0.mp4`
+    )
+    // slots.json が無いため yt-dlp Refresh が走るが、yt-dlp 自体が存在せず失敗するため 502 になる
+    // (position が本当に存在しないケースの 404 とは区別される)。
+    assert.equal(res.status, 502)
+    // Refresh フォールバックが実際に呼ばれたことは、失敗時に recordFailure() が
+    // slots.json を永続化する副作用で検証する (呼ばれていなければファイルは存在しない)。
+    const slotsPath = path.join(
+      coldDataDir,
+      encodeURIComponent('never-refreshed-playlist'),
+      'slots.json'
+    )
+    assert.ok(
+      fs.existsSync(slotsPath),
+      'Refresh フォールバックが呼ばれ、失敗記録が永続化されているはず'
+    )
+  } finally {
+    if (coldServer) {
+      const s = coldServer
+      await new Promise<void>((resolve, reject) => {
+        s.close((err) => {
+          if (err) reject(err)
+          else resolve()
+        })
+      })
+    }
+    fs.rmSync(coldDataDir, { recursive: true, force: true })
+  }
+})
+
 test('GET /:playlistId/manifest.json accepts any playlistId when the allowlist is empty', async () => {
   const openDataDir = fs.mkdtempSync(
     path.join(os.tmpdir(), 'yrp-route-test-open-')
