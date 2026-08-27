@@ -23,7 +23,9 @@ RUN apt-get update \
 # yt-dlp は pip ではなく standalone binary (yt-dlp_linux, PyInstaller で固めた self-contained build) を使う。
 # 素の "yt-dlp" (拡張子なし) は system Python 依存の zipapp なので、Python を同梱したくないこのイメージでは使えない。
 # `yt-dlp -U` による自己更新も standalone binary 同士の差し替えとして完結する。
-RUN curl -fL -o /usr/local/bin/yt-dlp https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux \
+# バージョンは Renovate (renovate.json の customManagers) で自動更新するため latest ではなく固定タグを使う。
+ARG YTDLP_VERSION=2026.08.19
+RUN curl -fL -o /usr/local/bin/yt-dlp "https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}/yt-dlp_linux" \
   && chmod a+rx /usr/local/bin/yt-dlp
 
 RUN corepack enable
