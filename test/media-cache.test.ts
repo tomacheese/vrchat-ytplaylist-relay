@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -9,6 +10,7 @@ import {
   getFreshOrStale,
   peekFreshCache,
   peekStaleCache,
+  prefetchAll,
   selectEvictions,
 } from '../src/media-cache'
 
@@ -236,3 +238,118 @@ test('getFreshOrStale returns null when there is no cached entry at all', () => 
 
   assert.equal(getFreshOrStale(config, 'v1'), null)
 })
+
+/**
+ * `-o <template>` を受け取って動画ファイルの代わりを書き出す偽 yt-dlp スクリプトを作る。
+ * `succeedAfter` 回目未満の呼び出しでは `failMessage` を stderr に出して exit 1 する
+ * (`downloadVideo` の実際のエラー分岐を、実バイナリなしで再現するため)。
+ * 呼び出し回数は `<script>.count` ファイルに記録され、テスト側で検証できる。
+ */
+function makeFakeYtdlp(
+  dir: string,
+  options: { failMessage: string; succeedAfter: number }
+): { scriptPath: string; countPath: string } {
+  const scriptPath = path.join(dir, `fake-ytdlp-${crypto.randomUUID()}.mjs`)
+  const countPath = `${scriptPath}.count`
+  fs.writeFileSync(countPath, '0')
+  fs.writeFileSync(
+    scriptPath,
+    String.raw`#!/usr/bin/env node
+import fs from 'node:fs'
+const countPath = ${JSON.stringify(countPath)}
+const attempt = Number(fs.readFileSync(countPath, 'utf8')) + 1
+fs.writeFileSync(countPath, String(attempt))
+if (attempt < ${JSON.stringify(options.succeedAfter)}) {
+  process.stderr.write(${JSON.stringify(options.failMessage)} + '\n')
+  process.exit(1)
+}
+const args = process.argv.slice(2)
+const template = args[args.indexOf('-o') + 1]
+fs.writeFileSync(template.replace('%(ext)s', 'mp4'), 'dummy video bytes')
+`
+  )
+  fs.chmodSync(scriptPath, 0o755)
+  return { scriptPath, countPath }
+}
+
+function readAttemptCount(countPath: string): number {
+  return Number(fs.readFileSync(countPath, 'utf8'))
+}
+
+test('prefetchAll pauses subsequent videos after a bot-detection error, without retrying', async () => {
+  cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yrp-prefetch-test-'))
+  const { scriptPath, countPath } = makeFakeYtdlp(cacheDir, {
+    failMessage: 'ERROR: [youtube] v: Sign in to confirm you’re not a bot.',
+    succeedAfter: Number.MAX_SAFE_INTEGER,
+  })
+  const config = makeConfig({ mediaCacheDir: cacheDir, ytdlpPath: scriptPath })
+  const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined)
+
+  await prefetchAll(config, ['v1', 'v2', 'v3'], 1)
+
+  // v1 が実際に yt-dlp を起動して失敗した 1 回だけで、v2/v3 はクールダウンによりスキップされる
+  // (v3 は個別にログされず、v2 の時点で残り全件がまとめて打ち切られる)。
+  assert.equal(readAttemptCount(countPath), 1)
+  assert.ok(
+    warnSpy.mock.calls.some(([message]) => message.includes('bot detection'))
+  )
+  assert.ok(
+    warnSpy.mock.calls.some(([message]) =>
+      message.includes(
+        'prefetch cooldown active, skipping remaining videos starting from v2'
+      )
+    )
+  )
+  warnSpy.mockRestore()
+})
+
+test('prefetchAll does not retry a permanently unavailable video', async () => {
+  cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yrp-prefetch-test-'))
+  const { scriptPath, countPath } = makeFakeYtdlp(cacheDir, {
+    failMessage: 'ERROR: [youtube] v1: Video unavailable',
+    succeedAfter: Number.MAX_SAFE_INTEGER,
+  })
+  const config = makeConfig({ mediaCacheDir: cacheDir, ytdlpPath: scriptPath })
+  const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined)
+
+  await prefetchAll(config, ['v1'], 1)
+
+  assert.equal(readAttemptCount(countPath), 1)
+  warnSpy.mockRestore()
+})
+
+test('prefetchAll retries once on a transient error and succeeds', async () => {
+  cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yrp-prefetch-test-'))
+  const { scriptPath, countPath } = makeFakeYtdlp(cacheDir, {
+    failMessage: 'yt-dlp timed out after 600000ms for video v1',
+    succeedAfter: 2,
+  })
+  const config = makeConfig({ mediaCacheDir: cacheDir, ytdlpPath: scriptPath })
+  const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined)
+
+  await prefetchAll(config, ['v1'], 1)
+
+  assert.equal(readAttemptCount(countPath), 2)
+  assert.equal(peekFreshCache(config, 'v1'), path.join(cacheDir, 'v1.mp4'))
+  warnSpy.mockRestore()
+}, 10_000)
+
+test('prefetchAll gives up after the retry also fails on a transient error', async () => {
+  cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yrp-prefetch-test-'))
+  const { scriptPath, countPath } = makeFakeYtdlp(cacheDir, {
+    failMessage: 'yt-dlp timed out after 600000ms for video v1',
+    succeedAfter: Number.MAX_SAFE_INTEGER,
+  })
+  const config = makeConfig({ mediaCacheDir: cacheDir, ytdlpPath: scriptPath })
+  const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined)
+
+  await prefetchAll(config, ['v1'], 1)
+
+  assert.equal(readAttemptCount(countPath), 2)
+  assert.ok(
+    warnSpy.mock.calls.some(([message]) =>
+      message.includes('prefetch failed for video v1 after retry')
+    )
+  )
+  warnSpy.mockRestore()
+}, 10_000)

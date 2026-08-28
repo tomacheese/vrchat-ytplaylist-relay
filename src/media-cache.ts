@@ -275,9 +275,57 @@ export function getFreshOrStale(
   return filePath
 }
 
+/** ボット検知発生時に Prefetch 全体を一時停止する長さ。ponytail: 固定 5 分、可変にする必要が出たら env 化する。 */
+const BOT_DETECTION_COOLDOWN_MS = 5 * 60 * 1000
+
+/** timeout 等の一時的エラーをリトライするまでの待機時間。 */
+const TRANSIENT_RETRY_DELAY_MS = 1000
+
+/** 指定ミリ秒だけ待機する。 */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/**
+ * yt-dlp の stderr から、YouTube 側のボット検知によるブロックかどうかを判定する。
+ * 個々の動画の問題ではなく一時的な IP ブロックのため、リトライではなく Prefetch 全体のクールダウンで扱う。
+ */
+function isBotDetectionError(err: unknown): boolean {
+  return (
+    err instanceof YtdlpError &&
+    /Sign in to confirm you.re not a bot/.test(err.stderr)
+  )
+}
+
+/** yt-dlp の stderr から、リトライしても回復しない恒久的な動画不可用エラーかどうかを判定する。 */
+function isPermanentVideoError(err: unknown): boolean {
+  return (
+    err instanceof YtdlpError &&
+    /Video unavailable|Private video|This video is unavailable|This video has been removed/.test(
+      err.stderr
+    )
+  )
+}
+
+/** Prefetch 失敗をログに残す。`err` が {@link YtdlpError} なら stderr も併せて出力する。 */
+function logPrefetchFailure(videoId: string, err: unknown, suffix = ''): void {
+  logger.warn(
+    `prefetch failed for video ${videoId}${suffix}: ${(err as Error).message}`
+  )
+  if (err instanceof YtdlpError && err.stderr.length > 0) {
+    logger.error(err.stderr)
+  }
+}
+
 /**
  * 複数 videoId を並行数を絞りつつ事前ダウンロードする (Playlist Refresh 後のバックグラウンド Prefetch 用)。
  * 1 本の失敗が他の Prefetch を止めないよう、失敗はログに残すだけで例外を投げない。
+ *
+ * エラー種別で挙動を分ける:
+ * - ボット検知: リトライせず、以降の videoId を {@link BOT_DETECTION_COOLDOWN_MS} の間スキップする
+ *   (連打が更なるブロックを招くのを防ぐ。未処理分は次回の Refresh/Prefetch サイクルに任せる)。
+ * - 恒久的な動画不可用エラー: リトライしても無駄なので即座に諦める。
+ * - それ以外 (timeout など一時的なエラー): 短い待機を挟んで 1 回だけリトライする。
  */
 export async function prefetchAll(
   config: AppConfig,
@@ -285,20 +333,52 @@ export async function prefetchAll(
   concurrency = 2
 ): Promise<void> {
   let cursor = 0
+  let cooldownUntil = 0
+
+  // 1 回目・リトライのどちらで発生したエラーも同じ分類を通す (リトライ側だけボット検知を
+  // 見逃してクールダウンが発動しない、といった一貫性の欠如を避けるため)。
+  async function attempt(videoId: string): Promise<void> {
+    for (let attemptNumber = 1; attemptNumber <= 2; attemptNumber++) {
+      try {
+        await getOrDownload(config, videoId)
+        return
+      } catch (err) {
+        if (isBotDetectionError(err)) {
+          cooldownUntil = Date.now() + BOT_DETECTION_COOLDOWN_MS
+          logPrefetchFailure(
+            videoId,
+            err,
+            ` (bot detection, pausing prefetch for ${BOT_DETECTION_COOLDOWN_MS / 1000}s)`
+          )
+          return
+        }
+        if (isPermanentVideoError(err)) {
+          logPrefetchFailure(videoId, err)
+          return
+        }
+        if (attemptNumber === 1) {
+          logPrefetchFailure(videoId, err, ', retrying once')
+          await sleep(TRANSIENT_RETRY_DELAY_MS)
+          continue
+        }
+        logPrefetchFailure(videoId, err, ' after retry')
+      }
+    }
+  }
+
   async function worker(): Promise<void> {
     while (cursor < videoIds.length) {
       const videoId = videoIds[cursor]
       cursor += 1
-      try {
-        await getOrDownload(config, videoId)
-      } catch (err) {
+      if (Date.now() < cooldownUntil) {
+        // 残り全件を同期的に消費してログを連発しないよう、continue ではなく打ち切る
+        // (未処理分は次回の Refresh/Prefetch サイクルに任せる)。
         logger.warn(
-          `prefetch failed for video ${videoId}: ${(err as Error).message}`
+          `prefetch cooldown active, skipping remaining videos starting from ${videoId}`
         )
-        if (err instanceof YtdlpError && err.stderr.length > 0) {
-          logger.error(err.stderr)
-        }
+        return
       }
+      await attempt(videoId)
     }
   }
   const workerCount = Math.min(concurrency, videoIds.length)
