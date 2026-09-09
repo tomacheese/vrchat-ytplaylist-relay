@@ -7,10 +7,12 @@ import { afterEach, beforeEach, test, vi } from 'vitest'
 import type { AppConfig } from '../src/config'
 
 vi.mock('../src/live-resolve', () => ({
-  resolveVideoInfo: vi.fn(async (videoId: string) => ({
-    isLive: true,
-    hlsMasterManifestUrl: `https://manifest.googlevideo.com/${videoId}/master.m3u8`,
-  })),
+  resolveVideoInfo: vi.fn((videoId: string) =>
+    Promise.resolve({
+      isLive: true,
+      hlsMasterManifestUrl: `https://manifest.googlevideo.com/${videoId}/master.m3u8`,
+    })
+  ),
 }))
 
 /**
@@ -22,11 +24,14 @@ vi.mock('../src/live-resolve', () => ({
 function makeSpawnMock() {
   const killMocks: ReturnType<typeof vi.fn>[] = []
   const spawnMock = vi.fn((_cmd: string, args: string[]) => {
-    const playlistPath = args.at(-1) as string
+    const [playlistPath] = args.slice(-1)
     const outDir = path.dirname(playlistPath)
     setTimeout(() => {
       fs.writeFileSync(path.join(outDir, 'live0.ts'), 'segment')
     }, 5)
+    // 実 ChildProcess は EventEmitter ベースの `.on('close', ...)` API を持つ (EventTarget では
+    // ない) ため、それを模倣する偽物として EventEmitter を使う必要がある。
+    // eslint-disable-next-line unicorn/prefer-event-target
     const emitter = new EventEmitter() as EventEmitter & { kill: unknown }
     const kill = vi.fn()
     emitter.kill = kill

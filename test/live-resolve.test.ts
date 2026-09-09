@@ -34,10 +34,10 @@ function makeFakeYtdlp(
   const body = options.failMessage
     ? String.raw`process.stderr.write(${JSON.stringify(options.failMessage)} + '\n')
 process.exit(1)`
-    : String.raw`process.stdout.write(${JSON.stringify(JSON.stringify(options.json ?? {}))})`
+    : `process.stdout.write(${JSON.stringify(JSON.stringify(options.json ?? {}))})`
   fs.writeFileSync(
     scriptPath,
-    String.raw`#!/usr/bin/env node
+    `#!/usr/bin/env node
 import fs from 'node:fs'
 const countPath = ${JSON.stringify(countPath)}
 const attempt = Number(fs.readFileSync(countPath, 'utf8')) + 1

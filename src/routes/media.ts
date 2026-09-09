@@ -196,19 +196,22 @@ export function mediaRouter(config: AppConfig): Router {
               : config.mediaDeliveryMode
 
             switch (effectiveMode) {
-              case 'redirect':
+              case 'redirect': {
                 redirectToYoutube(res, videoId)
                 return
-              case 'relay':
+              }
+              case 'relay': {
                 serveRelay(info, res)
                 return
-              case 'proxy':
+              }
+              case 'proxy': {
                 if (info.isLive) {
                   serveLiveProxy(config, playlistId, position, videoId, res)
                 } else {
                   serveVodProxy(config, videoId, res)
                 }
                 return
+              }
               case 'hybrid': {
                 // liveDeliveryMode は "hybrid" を許容しないため (config.ts のバリデーション)、
                 // effectiveMode が "hybrid" になるのは info.isLive === false の場合のみ。

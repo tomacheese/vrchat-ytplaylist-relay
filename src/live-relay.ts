@@ -49,10 +49,9 @@ function waitForFirstSegment(outDir: string): Promise<void> {
       return
     }
     const watcher = fs.watch(outDir, (_eventType, filename) => {
-      if (filename && SEGMENT_FILE_PATTERN.test(filename)) {
-        watcher.close()
-        resolve()
-      }
+      if (!filename || !SEGMENT_FILE_PATTERN.test(filename)) return
+      watcher.close()
+      resolve()
     })
   })
 }
