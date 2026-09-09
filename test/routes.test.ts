@@ -7,6 +7,7 @@ import type { AddressInfo } from 'node:net'
 import type { Server } from 'node:http'
 import { createApp } from '../src/app'
 import type { AppConfig } from '../src/config'
+import { liveRelayDirFor } from '../src/live-relay'
 import { buildManifest, persistSlotState } from '../src/manifest-store'
 import { primeManifestCacheForTests } from '../src/refresh'
 
@@ -92,6 +93,38 @@ test('GET /:playlistId/:position.mp4 is public and redirects to the canonical Yo
     res.headers.get('location'),
     'https://www.youtube.com/watch?v=v1'
   )
+})
+
+test('GET /:playlistId/:position/live/:file serves the live-relay file and updates its lastAccessedAt', async () => {
+  const outDir = liveRelayDirFor(config, 'v1')
+  fs.mkdirSync(outDir, { recursive: true })
+  fs.writeFileSync(path.join(outDir, 'live.m3u8'), '#EXTM3U')
+  try {
+    const res = await fetch(`${baseUrl}/pl1/0/live/live.m3u8`)
+    assert.equal(res.status, 200)
+    assert.equal(await res.text(), '#EXTM3U')
+  } finally {
+    fs.rmSync(outDir, { recursive: true, force: true })
+  }
+})
+
+test('GET /:playlistId/:position/live/:file returns 404 for a file name outside the live.m3u8/live<N>.ts pattern', async () => {
+  const outDir = liveRelayDirFor(config, 'v1')
+  fs.mkdirSync(outDir, { recursive: true })
+  fs.writeFileSync(path.join(outDir, 'live.m3u8'), '#EXTM3U')
+  try {
+    const res = await fetch(
+      `${baseUrl}/pl1/0/live/${encodeURIComponent('../../etc/passwd')}`
+    )
+    assert.equal(res.status, 404)
+  } finally {
+    fs.rmSync(outDir, { recursive: true, force: true })
+  }
+})
+
+test('GET /:playlistId/:position/live/:file returns 404 when the live-relay file does not exist', async () => {
+  const res = await fetch(`${baseUrl}/pl1/0/live/live.m3u8`)
+  assert.equal(res.status, 404)
 })
 
 test.skipIf(process.env.RUN_INTEGRATION !== '1')(

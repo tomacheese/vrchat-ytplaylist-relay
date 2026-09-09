@@ -28,7 +28,12 @@ const relayMutex = new KeyedMutex()
 /** videoId ごとの実行中 Live 再公開状態。 */
 const relays = new Map<string, LiveRelayState>()
 
-function outDirFor(config: AppConfig, videoId: string): string {
+/**
+ * videoId の Live 再公開ファイル (playlist + segment) が置かれるディレクトリの絶対パスを返す。
+ * `encodeURIComponent(videoId)` を使うのは `media-cache.ts` の `cacheFilePath()` と同じ
+ * path traversal 対策 (Live 再公開ファイルの配信ルート (`routes/live.ts`) からも参照する)。
+ */
+export function liveRelayDirFor(config: AppConfig, videoId: string): string {
   return path.join(config.liveRelayOutDir, encodeURIComponent(videoId))
 }
 
@@ -128,7 +133,7 @@ async function startLiveRelay(
     return { error: 'failed to resolve HLS manifest' }
   }
 
-  const outDir = outDirFor(config, videoId)
+  const outDir = liveRelayDirFor(config, videoId)
   fs.mkdirSync(outDir, { recursive: true })
   const ffmpegProcess = startFfmpeg(outDir, info.hlsMasterManifestUrl)
 
