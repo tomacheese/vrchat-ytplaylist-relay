@@ -15,8 +15,8 @@ export class YtdlpError extends Error {
   }
 }
 
-/** {@link fetchPlaylistEntries} / {@link downloadVideo} の実行オプション。 */
-interface RunYtdlpOptions {
+/** {@link fetchPlaylistEntries} / {@link downloadVideo} / {@link resolveVideoJson} の実行オプション。 */
+export interface RunYtdlpOptions {
   ytdlpPath: string
   timeoutMs: number
 }
@@ -136,6 +136,30 @@ export async function fetchPlaylistEntries(
   } catch (err) {
     throw new YtdlpError(
       `Failed to parse yt-dlp JSON output for playlist ${playlistId}: ${(err as Error).message}`,
+      stderr
+    )
+  }
+}
+
+/**
+ * videoId を yt-dlp (`-j`, `--no-playlist`) で解決し、パース済みの JSON (yt-dlp の InfoExtractor 出力) を返す。
+ * `is_live` / `formats[]` の解釈は呼び出し元 (`live-resolve.ts`) の責務とし、ここでは yt-dlp
+ * の実行と JSON パースのみを行う (`fetchPlaylistEntries` と同じ関心分離)。
+ */
+export async function resolveVideoJson(
+  videoId: string,
+  options: RunYtdlpOptions
+): Promise<unknown> {
+  const url = `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`
+  const args = ['-j', '--no-playlist', '--js-runtimes', 'deno', url]
+
+  const { stdout, stderr } = await runYtdlp(args, options, `video ${videoId}`)
+
+  try {
+    return JSON.parse(stdout) as unknown
+  } catch (err) {
+    throw new YtdlpError(
+      `Failed to parse yt-dlp JSON output for video ${videoId}: ${(err as Error).message}`,
       stderr
     )
   }
