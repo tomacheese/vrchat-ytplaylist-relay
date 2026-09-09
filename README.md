@@ -22,29 +22,48 @@ playlistId をそのまま取得・配信する (事前登録不要)。特定の
 Playlist ごとに `maxSlots` を上書きしたい場合は `cp config/playlists.json.example
 config/playlists.json` して編集する。設定すると、一覧に無い playlistId は 404 になる。
 
-## Media 配信方式 (`MEDIA_DELIVERY_MODE`)
+## Media 配信方式 (`MEDIA_DELIVERY_MODE` / `LIVE_DELIVERY_MODE`)
 
-`GET /:playlistId/:position.mp4` の配信方式は `MEDIA_DELIVERY_MODE` で切り替える。
+`GET /:playlistId/:position.mp4` の配信方式は、解決した動画が VOD (通常動画) か
+Live (配信中) かで別々の環境変数から選ばれる。VOD は `MEDIA_DELIVERY_MODE`、Live は
+`LIVE_DELIVERY_MODE` で切り替える (両方とも未設定なら従来通り `redirect`)。
 
-| 値 | 挙動 | 追加要件 |
-|---|---|---|
-| `redirect` (既定) | `https://www.youtube.com/watch?v=<videoId>` へ 302 Redirect | なし |
-| `proxy` | Backend 自身が yt-dlp + ffmpeg でダウンロード・キャッシュし、バイト列を直接配信 | ffmpeg、ディスク容量 |
-| `hybrid` | キャッシュ済みなら `proxy` と同様に配信、未キャッシュなら裏でダウンロードを開始しつつ即座に `redirect` する | ffmpeg、ディスク容量 |
+| 値 | 挙動 | VOD | Live | 追加要件 |
+|---|---|---|---|---|
+| `redirect` (既定) | `https://www.youtube.com/watch?v=<videoId>` へ 302 Redirect | ✅ | ✅ | なし |
+| `relay` | Backend 自身の yt-dlp が解決した HLS master manifest URL へ 302 Redirect | ✅ | ✅ | なし |
+| `proxy` | VOD: yt-dlp + ffmpeg でダウンロード・キャッシュしバイト列を直接配信。Live: ffmpeg で HLS をローカル再公開し配信 | ✅ | ✅ | ffmpeg、ディスク容量 |
+| `hybrid` | キャッシュ済みなら `proxy` と同様に配信、未キャッシュなら裏でダウンロードを開始しつつ即座に `relay` 相当で 302 する (解決失敗時のみ `redirect`) | ✅ | ❌ (起動時エラー) | ffmpeg、ディスク容量 |
 
 `redirect` は VRChat 同梱の制限付き yt-dlp (`Tools/yt-dlp.exe`) が googlevideo.com への
-直リンク解決に失敗し 403 になることがある既知の問題を抱える。`proxy` はこれを回避できるが、
-ダウンロード完了まで応答をブロックするため Client 側の Timeout に間に合わないことがある。
-`hybrid` は未キャッシュ時に即座に `redirect` 応答を返しつつ裏でダウンロードを進めるため、
-Client が Timeout 後に再リクエストしてくる頃にはキャッシュが出来ていて `proxy` 相当の配信に
-切り替わる想定の折衷案。`proxy` / `hybrid` はいずれも YouTube 動画データを Backend にダウンロード・
-再配信するため、利用規約上のリスクを運用者が許容していることが前提。
+直リンク解決に失敗し 403 になることがある既知の問題を抱える。`relay` は Backend 自身の
+(最新版) yt-dlp が解決した HLS master manifest URL へ Redirect するためこの問題を回避でき、
+ffmpeg やディスクキャッシュも不要 (ステートレス)。`proxy` は動画データそのものを Backend
+経由で配信することで同じ問題を回避できるが、VOD ではダウンロード完了まで応答をブロックする
+ため Client 側の Timeout に間に合わないことがあり、Live では ffmpeg による HLS 再公開
+(後述) を常駐させる。`hybrid` (VOD 専用) は未キャッシュ時に即座に `relay` 相当の 302 応答を
+返しつつ裏でダウンロードを進めるため、Client が Timeout 後に再リクエストしてくる頃には
+キャッシュが出来ていて `proxy` 相当の配信に切り替わる想定の折衷案。`proxy` / `hybrid` は
+いずれも YouTube 動画データを Backend にダウンロード・再配信するため、利用規約上のリスクを
+運用者が許容していることが前提。
 
-`proxy` / `hybrid` はいずれも、キャッシュが `MEDIA_CACHE_TTL_MS` を超えて再ダウンロードが走っている間も、直前まで有効だった完了済みキャッシュファイルを Seek 可能な状態のまま配信し続ける (stale-while-revalidate)。
-`proxy` はブロックせず、`hybrid` は `redirect` フォールバックせずに即座に配信し、再ダウンロードが完了すると次回以降のリクエストから新しいファイルに切り替わる。
+VOD の `proxy` / `hybrid` はいずれも、キャッシュが `MEDIA_CACHE_TTL_MS` を超えて再ダウンロードが走っている間も、直前まで有効だった完了済みキャッシュファイルを Seek 可能な状態のまま配信し続ける (stale-while-revalidate)。
+`proxy` はブロックせず、`hybrid` は redirect フォールバックせずに即座に配信し、再ダウンロードが完了すると次回以降のリクエストから新しいファイルに切り替わる。
 
-`proxy` / `hybrid` 関連の設定 (`.env.example` 参照): `MEDIA_MAX_HEIGHT` / `MEDIA_CACHE_DIR` /
+VOD `proxy` / `hybrid` 関連の設定 (`.env.example` 参照): `MEDIA_MAX_HEIGHT` / `MEDIA_CACHE_DIR` /
 `MEDIA_CACHE_MAX_BYTES` / `MEDIA_CACHE_TTL_MS` / `MEDIA_DOWNLOAD_TIMEOUT_MS`。
+Live `proxy` 関連の設定: `LIVE_RELAY_OUT_DIR` (再公開先ディレクトリ) /
+`LIVE_RELAY_IDLE_TTL_MS` (最終アクセスからの ffmpeg 停止猶予、既定5分。視聴者がいなくなった
+Live 配信の ffmpeg プロセスを早めに止めるため、VOD の `MEDIA_CACHE_TTL_MS` より大幅に短い)。
+Live `proxy` では videoId ごとに ffmpeg プロセスが1つ常駐し、複数視聴者は同じ再公開ファイル
+(playlist + segment) を fetch するだけなので、視聴者が増えても Backend 側の追加コストは
+静的ファイル配信のリクエスト数のみで済む。
+
+> [!WARNING]
+> **破壊的変更**: VOD `hybrid` モードの未キャッシュ時フォールバック先が `redirect`
+> (`youtube.com` への 302) から `relay` (解決済み HLS master manifest URL への 302、
+> 解決に失敗した場合のみ従来通り `redirect`) に変更された。`hybrid` を使っている既存の
+> デプロイは、この挙動の変化を踏まえて動作確認すること。
 
 ## Docker
 
