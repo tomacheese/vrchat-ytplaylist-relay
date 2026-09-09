@@ -22,11 +22,19 @@ export interface AppConfig {
    *   ffmpeg / 十分なディスク容量が必要になる。ダウンロード完了まで応答をブロックするため、
    *   Client 側の Timeout に間に合わないことがある。
    * - "hybrid": キャッシュ済みなら "proxy" と同様にバイト列を直接配信し、未キャッシュ (または TTL 切れ)
-   *   なら応答をブロックせずダウンロードを裏で開始しつつ即座に "redirect" と同様の 302 応答を返す。
-   *   Client が Timeout 後に再リクエストしてきた頃にはダウンロードが完了している想定で、
-   *   "redirect" の即応性と "proxy" の 403 回避を両立させる。
+   *   なら応答をブロックせずダウンロードを裏で開始しつつ即座に "relay" (解決失敗時のみ "redirect")
+   *   と同様の 302 応答を返す。Client が Timeout 後に再リクエストしてきた頃にはダウンロードが
+   *   完了している想定で、即応性と "proxy" の 403 回避を両立させる。
+   * - "relay": Backend が yt-dlp で解決した HLS master manifest URL へ 302 Redirect する。
+   *   ffmpeg・ディスクキャッシュを使わないステートレスな配信方式 (Live 動画にも共通で使える)。
    */
-  deliveryMode: 'redirect' | 'proxy' | 'hybrid'
+  mediaDeliveryMode: 'redirect' | 'relay' | 'proxy' | 'hybrid'
+  /**
+   * Live (配信中) 動画向けの `GET /:playlistId/:position.mp4` 配信方式。
+   * `mediaDeliveryMode` と独立して設定でき、VOD/Live で異なる方式を選べる。
+   * `hybrid` は Live 未対応のため指定不可 (起動時エラー)。既定値は "redirect" (現状維持)。
+   */
+  liveDeliveryMode: 'redirect' | 'relay' | 'proxy'
   /** "proxy" モードでダウンロードする動画の最大高さ (px)。YouTube 側のフォーマットから、これ以下で最高画質のものを選ぶ。 */
   mediaMaxHeight: number
   /** "proxy" モードでダウンロード済み動画ファイル・メタデータを保存するディレクトリ。 */
@@ -79,17 +87,38 @@ function readServerConfig(configPath: string): ServerConfig {
   return parsed
 }
 
-function readDeliveryMode(
+function readMediaDeliveryMode(
   overrides: Partial<AppConfig>
-): 'redirect' | 'proxy' | 'hybrid' {
+): 'redirect' | 'relay' | 'proxy' | 'hybrid' {
   const raw =
-    overrides.deliveryMode ??
+    overrides.mediaDeliveryMode ??
     // 空文字列 ("MEDIA_DELIVERY_MODE=" のような未設定相当の指定) も既定値扱いにするため || を使う。
     // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing
     (process.env.MEDIA_DELIVERY_MODE?.trim() || 'redirect')
-  if (raw !== 'redirect' && raw !== 'proxy' && raw !== 'hybrid') {
+  if (
+    raw !== 'redirect' &&
+    raw !== 'relay' &&
+    raw !== 'proxy' &&
+    raw !== 'hybrid'
+  ) {
     throw new Error(
-      `MEDIA_DELIVERY_MODE must be "redirect", "proxy" or "hybrid" (got: ${raw})`
+      `MEDIA_DELIVERY_MODE must be "redirect", "relay", "proxy" or "hybrid" (got: ${raw})`
+    )
+  }
+  return raw
+}
+
+function readLiveDeliveryMode(
+  overrides: Partial<AppConfig>
+): 'redirect' | 'relay' | 'proxy' {
+  const raw =
+    overrides.liveDeliveryMode ??
+    // 空文字列 ("LIVE_DELIVERY_MODE=" のような未設定相当の指定) も既定値扱いにするため || を使う。
+    // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing
+    (process.env.LIVE_DELIVERY_MODE?.trim() || 'redirect')
+  if (raw !== 'redirect' && raw !== 'relay' && raw !== 'proxy') {
+    throw new Error(
+      `LIVE_DELIVERY_MODE must be "redirect", "relay" or "proxy" (got: ${raw})`
     )
   }
   return raw
@@ -122,7 +151,8 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     manifestCacheTtlMs:
       overrides.manifestCacheTtlMs ??
       Number(process.env.MANIFEST_CACHE_TTL_MS ?? 300_000),
-    deliveryMode: readDeliveryMode(overrides),
+    mediaDeliveryMode: readMediaDeliveryMode(overrides),
+    liveDeliveryMode: readLiveDeliveryMode(overrides),
     mediaMaxHeight:
       overrides.mediaMaxHeight ?? Number(process.env.MEDIA_MAX_HEIGHT ?? 1080),
     mediaCacheDir: path.resolve(

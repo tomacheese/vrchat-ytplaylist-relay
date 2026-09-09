@@ -32,7 +32,7 @@ function redirectToYoutube(res: Response, videoId: string): void {
  * Position Pool 状態に対象 position が無い場合 (初回リクエストなど) は、Manifest Endpoint と
  * 同様に yt-dlp Refresh を自動的に試みてから再解決する (`resolveVideoIdForPosition`)。
  *
- * `config.deliveryMode` により配信方式を切り替える:
+ * `config.mediaDeliveryMode` により配信方式を切り替える:
  * - "redirect" (既定値): 動画バイト列を配信せず、解決した YouTube 動画へ 302 Redirect するだけ。
  *   VRChat の AVProVideoPlayer は youtube.com の URL をネイティブに解釈できるが、VRChat 同梱の
  *   制限付き yt-dlp が googlevideo.com 直リンクの解決に失敗し再生できないことがある。
@@ -79,12 +79,12 @@ export function mediaRouter(config: AppConfig): Router {
         }
         const { videoId } = resolved
 
-        if (config.deliveryMode === 'redirect') {
+        if (config.mediaDeliveryMode === 'redirect') {
           redirectToYoutube(res, videoId)
           return
         }
 
-        if (config.deliveryMode === 'hybrid') {
+        if (config.mediaDeliveryMode === 'hybrid') {
           const cachedPath = getFreshOrStale(config, videoId)
           if (cachedPath) {
             res.sendFile(path.resolve(cachedPath))

@@ -25,7 +25,8 @@ const config: AppConfig = {
   // テスト中に GET /manifest.json 経由で本物の yt-dlp が起動されないよう、TTL を長めに取り
   // メモリキャッシュを primeManifestCacheForTests() で直接投入する。
   manifestCacheTtlMs: 60_000,
-  deliveryMode: 'redirect',
+  mediaDeliveryMode: 'redirect',
+  liveDeliveryMode: 'redirect',
   mediaMaxHeight: 1080,
   mediaCacheDir: '',
   mediaCacheMaxBytes: 10 * 1024 * 1024 * 1024,
@@ -100,7 +101,7 @@ test.skipIf(process.env.RUN_INTEGRATION !== '1')(
       ...config,
       dataDir: proxyDataDir,
       mediaCacheDir: path.join(proxyDataDir, 'cache'),
-      deliveryMode: 'proxy',
+      mediaDeliveryMode: 'proxy',
       mediaDownloadTimeoutMs: 600_000,
     }
     // "v1" は buildManifest でのテスト用ダミー videoId なので、実在の動画 ID に上書きする。
@@ -151,7 +152,7 @@ test('GET /:playlistId/:position.mp4 in hybrid mode falls back to a YouTube redi
     ...config,
     dataDir: hybridDataDir,
     mediaCacheDir: path.join(hybridDataDir, 'cache'),
-    deliveryMode: 'hybrid',
+    mediaDeliveryMode: 'hybrid',
     // バックグラウンドダウンロードは失敗させて即終わらせる (redirect フォールバック自体の検証が目的のため)。
     ytdlpPath: 'yt-dlp-does-not-exist',
   }
@@ -216,7 +217,7 @@ test('GET /:playlistId/:position.mp4 in hybrid mode serves cached bytes directly
     ...config,
     dataDir: hybridDataDir,
     mediaCacheDir: cacheDir,
-    deliveryMode: 'hybrid',
+    mediaDeliveryMode: 'hybrid',
   }
   const { state, manifest } = buildManifest(
     null,
@@ -276,7 +277,7 @@ test('GET /:playlistId/:position.mp4 in proxy mode serves stale cached bytes dir
     ...config,
     dataDir: proxyDataDir,
     mediaCacheDir: cacheDir,
-    deliveryMode: 'proxy',
+    mediaDeliveryMode: 'proxy',
     // 裏の再ダウンロードは失敗させて即終わらせる (stale 配信自体の検証が目的のため)。
     ytdlpPath: 'yt-dlp-does-not-exist',
   }
@@ -337,7 +338,7 @@ test('GET /:playlistId/:position.mp4 in hybrid mode serves stale cached bytes di
     ...config,
     dataDir: hybridDataDir,
     mediaCacheDir: cacheDir,
-    deliveryMode: 'hybrid',
+    mediaDeliveryMode: 'hybrid',
     ytdlpPath: 'yt-dlp-does-not-exist',
   }
   const { state, manifest } = buildManifest(
