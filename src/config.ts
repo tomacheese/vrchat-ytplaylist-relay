@@ -35,6 +35,14 @@ export interface AppConfig {
    * `hybrid` は Live 未対応のため指定不可 (起動時エラー)。既定値は "redirect" (現状維持)。
    */
   liveDeliveryMode: 'redirect' | 'relay' | 'proxy'
+  /** Live `proxy` モードで ffmpeg が HLS 再公開ファイル (playlist + segment) を書き出すディレクトリ。 */
+  liveRelayOutDir: string
+  /**
+   * Live 再公開ファイルの配信ルートへのアクセスが途絶えてから、ffmpeg プロセスを停止するまでの
+   * 猶予期間 (ms)。ディスク容量ではなく常駐 ffmpeg プロセス数が制約になるため、
+   * `mediaCacheTtlMs` (既定6時間) より大幅に短い既定値 (5分) にする。
+   */
+  liveRelayIdleTtlMs: number
   /** "proxy" モードでダウンロードする動画の最大高さ (px)。YouTube 側のフォーマットから、これ以下で最高画質のものを選ぶ。 */
   mediaMaxHeight: number
   /** "proxy" モードでダウンロード済み動画ファイル・メタデータを保存するディレクトリ。 */
@@ -153,6 +161,14 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
       Number(process.env.MANIFEST_CACHE_TTL_MS ?? 300_000),
     mediaDeliveryMode: readMediaDeliveryMode(overrides),
     liveDeliveryMode: readLiveDeliveryMode(overrides),
+    liveRelayOutDir: path.resolve(
+      overrides.liveRelayOutDir ??
+        process.env.LIVE_RELAY_OUT_DIR ??
+        './data/live'
+    ),
+    liveRelayIdleTtlMs:
+      overrides.liveRelayIdleTtlMs ??
+      Number(process.env.LIVE_RELAY_IDLE_TTL_MS ?? 5 * 60 * 1000),
     mediaMaxHeight:
       overrides.mediaMaxHeight ?? Number(process.env.MEDIA_MAX_HEIGHT ?? 1080),
     mediaCacheDir: path.resolve(

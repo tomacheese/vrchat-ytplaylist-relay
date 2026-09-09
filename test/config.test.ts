@@ -74,6 +74,24 @@ test('isPlaylistAllowed rejects path-traversal-shaped playlistIds even when the 
   assert.equal(isPlaylistAllowed(config, '../secret'), false)
 })
 
+test('loadConfig defaults liveRelayOutDir to "./data/live" when unset', () => {
+  const config = loadConfig({
+    configPath: path.join(os.tmpdir(), 'yrp-config-test-unused.json'),
+    playlists: [],
+  })
+
+  assert.equal(config.liveRelayOutDir, path.resolve('./data/live'))
+})
+
+test('loadConfig defaults liveRelayIdleTtlMs to 5 minutes when unset', () => {
+  const config = loadConfig({
+    configPath: path.join(os.tmpdir(), 'yrp-config-test-unused.json'),
+    playlists: [],
+  })
+
+  assert.equal(config.liveRelayIdleTtlMs, 5 * 60 * 1000)
+})
+
 test('loadConfig defaults mediaDeliveryMode to "redirect" when unset', () => {
   const config = loadConfig({
     configPath: path.join(os.tmpdir(), 'yrp-config-test-unused.json'),

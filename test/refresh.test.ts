@@ -35,6 +35,8 @@ function baseConfig(
     manifestCacheTtlMs: 60_000,
     mediaDeliveryMode: 'redirect',
     liveDeliveryMode: 'redirect',
+    liveRelayOutDir: tempDataDir(),
+    liveRelayIdleTtlMs: 5 * 60 * 1000,
     mediaMaxHeight: 1080,
     mediaCacheDir: tempDataDir(),
     mediaCacheMaxBytes: 10 * 1024 * 1024 * 1024,

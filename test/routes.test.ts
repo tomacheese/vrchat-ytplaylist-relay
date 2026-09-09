@@ -27,6 +27,8 @@ const config: AppConfig = {
   manifestCacheTtlMs: 60_000,
   mediaDeliveryMode: 'redirect',
   liveDeliveryMode: 'redirect',
+  liveRelayOutDir: '',
+  liveRelayIdleTtlMs: 5 * 60 * 1000,
   mediaMaxHeight: 1080,
   mediaCacheDir: '',
   mediaCacheMaxBytes: 10 * 1024 * 1024 * 1024,
@@ -38,6 +40,7 @@ const config: AppConfig = {
 beforeAll(async () => {
   dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yrp-route-test-'))
   config.dataDir = dataDir
+  config.liveRelayOutDir = path.join(dataDir, 'live')
   config.mediaCacheDir = path.join(dataDir, 'cache')
 
   // slot 対応表と Manifest キャッシュを事前に生成しておく (yt-dlp の実行自体は別テストで検証済みのためここでは不要)。
