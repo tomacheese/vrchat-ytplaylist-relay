@@ -2,7 +2,7 @@ import path from 'node:path'
 import { Router } from 'express'
 import type { Response } from 'express'
 import { rateLimit } from 'express-rate-limit'
-import { isPlaylistAllowed } from '../config'
+import { PLAYLIST_ID_PATTERN, isPlaylistAllowed } from '../config'
 import type { AppConfig } from '../config'
 import { ensureLiveRelay } from '../live-relay'
 import { resolveVideoInfo } from '../live-resolve'
@@ -86,7 +86,12 @@ function serveLiveProxy(
         return
       }
       // playlistId は呼び出し元 (mediaRouter) で isPlaylistAllowed() 済みだが、静的解析ツールが
-      // 正しく安全性を追跡できるよう、Redirect 先の組み立て時にも明示的にエンコードする。
+      // 関数境界をまたいだ安全性を追跡できるよう、Redirect 先の組み立て直前にも明示的に
+      // フォーマットを再検証してからエンコードする。
+      if (!PLAYLIST_ID_PATTERN.test(playlistId)) {
+        res.status(404).json({ error: 'unknown playlistId' })
+        return
+      }
       res.redirect(
         302,
         `/${encodeURIComponent(playlistId)}/${position}/live/${encodeURIComponent(result.playlistFileName)}`

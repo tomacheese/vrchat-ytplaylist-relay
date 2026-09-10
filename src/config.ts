@@ -197,7 +197,7 @@ export function maxSlotsFor(config: AppConfig, playlistId: string): number {
 // (`encodeURIComponent(playlistId)`) や yt-dlp の引数に渡るため、ここで弾いておかないと
 // "." だけの playlistId (`encodeURIComponent` で変化しない) が `path.join(dataDir, '..')` に
 // 化けて dataDir の外にファイルを読み書きできてしまう (path traversal)。
-const PLAYLIST_ID_PATTERN = /^[\w-]+$/
+export const PLAYLIST_ID_PATTERN = /^[\w-]+$/
 
 /**
  * playlistId が要求可能かどうかを判定する。
