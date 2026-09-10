@@ -177,6 +177,206 @@ test('GET /:playlistId/:position/live/:file returns 404 when the live-relay file
   assert.equal(res.status, 404)
 })
 
+// 実 YouTube videoId 形式 (11 文字) を満たすダミー videoId。Playlist に属さず videoId 直接指定
+// エンドポイント (GET /video/:videoId, GET /video/:videoId.mp4) 用のテストにのみ使う。
+const DIRECT_VIDEO_ID = 'dQw4w9WgXcQ'
+
+test('GET /video/:videoId and GET /video/:videoId.mp4 are public and redirect to the canonical YouTube watch URL', async () => {
+  for (const path_ of [
+    `/video/${DIRECT_VIDEO_ID}`,
+    `/video/${DIRECT_VIDEO_ID}.mp4`,
+  ]) {
+    const res = await fetch(`${baseUrl}${path_}`, { redirect: 'manual' })
+    assert.equal(res.status, 302, `${path_} must NOT require Authorization`)
+    assert.equal(
+      res.headers.get('location'),
+      `https://www.youtube.com/watch?v=${DIRECT_VIDEO_ID}`
+    )
+  }
+})
+
+test('GET /video/:videoId and GET /video/:videoId.mp4 return 404 for a malformed videoId', async () => {
+  for (const path_ of ['/video/too-short', '/video/too-short.mp4']) {
+    const res = await fetch(`${baseUrl}${path_}`)
+    assert.equal(res.status, 404)
+    const body = (await res.json()) as { error: string }
+    assert.equal(body.error, 'invalid videoId')
+  }
+})
+
+test('GET /live/:videoId/:file returns 404 for a malformed videoId', async () => {
+  const res = await fetch(`${baseUrl}/live/too-short/live.m3u8`)
+  assert.equal(res.status, 404)
+  const body = (await res.json()) as { error: string }
+  assert.equal(body.error, 'invalid videoId')
+})
+
+test('GET /live/:videoId/:file serves the live-relay file directly (videoId-keyed, no playlistId)', async () => {
+  const outDir = liveRelayDirFor(config, DIRECT_VIDEO_ID)
+  fs.mkdirSync(outDir, { recursive: true })
+  fs.writeFileSync(path.join(outDir, 'live.m3u8'), '#EXTM3U')
+  try {
+    const res = await fetch(`${baseUrl}/live/${DIRECT_VIDEO_ID}/live.m3u8`)
+    assert.equal(res.status, 200)
+    assert.equal(await res.text(), '#EXTM3U')
+  } finally {
+    fs.rmSync(outDir, { recursive: true, force: true })
+  }
+})
+
+test('GET /video/:videoId.mp4 in relay mode redirects to the resolved HLS master manifest URL', async () => {
+  const relayDataDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'yrp-route-test-video-relay-')
+  )
+  const relayConfig: AppConfig = {
+    ...config,
+    dataDir: relayDataDir,
+    mediaDeliveryMode: 'relay',
+    liveDeliveryMode: 'relay',
+  }
+  vi.mocked(resolveVideoInfo).mockResolvedValue({
+    isLive: false,
+    hlsMasterManifestUrl: 'https://manifest.googlevideo.com/v1/master.m3u8',
+  })
+
+  const app = createApp(relayConfig)
+  let relayServer: Server | undefined
+  try {
+    relayServer = await new Promise<Server>((resolve) => {
+      const s = app.listen(0, '127.0.0.1', () => {
+        resolve(s)
+      })
+    })
+    const address = relayServer.address() as AddressInfo
+    const res = await fetch(
+      `http://127.0.0.1:${address.port}/video/${DIRECT_VIDEO_ID}.mp4`,
+      { redirect: 'manual' }
+    )
+    assert.equal(res.status, 302)
+    assert.equal(
+      res.headers.get('location'),
+      'https://manifest.googlevideo.com/v1/master.m3u8'
+    )
+  } finally {
+    if (relayServer) {
+      const s = relayServer
+      await new Promise<void>((resolve, reject) => {
+        s.close((err) => {
+          if (err) reject(err)
+          else resolve()
+        })
+      })
+    }
+    fs.rmSync(relayDataDir, { recursive: true, force: true })
+  }
+})
+
+test('GET /video/:videoId.mp4 in proxy mode serves cached bytes directly (shares the videoId-keyed cache with the Playlist/position endpoint)', async () => {
+  const proxyDataDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'yrp-route-test-video-proxy-')
+  )
+  const cacheDir = path.join(proxyDataDir, 'cache')
+  fs.mkdirSync(cacheDir, { recursive: true })
+  fs.writeFileSync(
+    path.join(cacheDir, `${DIRECT_VIDEO_ID}.mp4`),
+    'dummy video bytes'
+  )
+  fs.writeFileSync(
+    path.join(cacheDir, `${DIRECT_VIDEO_ID}.meta.json`),
+    JSON.stringify({
+      videoId: DIRECT_VIDEO_ID,
+      sizeBytes: 18,
+      downloadedAt: Date.now(),
+      lastAccessedAt: Date.now(),
+    })
+  )
+  const proxyConfig: AppConfig = {
+    ...config,
+    dataDir: proxyDataDir,
+    mediaCacheDir: cacheDir,
+    mediaDeliveryMode: 'proxy',
+  }
+
+  const app = createApp(proxyConfig)
+  let proxyServer: Server | undefined
+  try {
+    proxyServer = await new Promise<Server>((resolve) => {
+      const s = app.listen(0, '127.0.0.1', () => {
+        resolve(s)
+      })
+    })
+    const address = proxyServer.address() as AddressInfo
+    const res = await fetch(
+      `http://127.0.0.1:${address.port}/video/${DIRECT_VIDEO_ID}.mp4`
+    )
+    assert.equal(res.status, 200)
+    const body = await res.text()
+    assert.equal(body, 'dummy video bytes')
+  } finally {
+    if (proxyServer) {
+      const s = proxyServer
+      await new Promise<void>((resolve, reject) => {
+        s.close((err) => {
+          if (err) reject(err)
+          else resolve()
+        })
+      })
+    }
+    fs.rmSync(proxyDataDir, { recursive: true, force: true })
+  }
+})
+
+test('GET /video/:videoId.mp4 with a live video in proxy mode redirects to GET /live/:videoId/:file', async () => {
+  const liveProxyDataDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'yrp-route-test-video-live-proxy-')
+  )
+  const liveProxyConfig: AppConfig = {
+    ...config,
+    dataDir: liveProxyDataDir,
+    mediaDeliveryMode: 'redirect',
+    liveDeliveryMode: 'proxy',
+  }
+  vi.mocked(resolveVideoInfo).mockResolvedValue({
+    isLive: true,
+    hlsMasterManifestUrl: 'https://manifest.googlevideo.com/v1/master.m3u8',
+  })
+  vi.mocked(ensureLiveRelay).mockResolvedValue({
+    outDir: '/unused',
+    playlistFileName: 'live.m3u8',
+  })
+
+  const app = createApp(liveProxyConfig)
+  let liveProxyServer: Server | undefined
+  try {
+    liveProxyServer = await new Promise<Server>((resolve) => {
+      const s = app.listen(0, '127.0.0.1', () => {
+        resolve(s)
+      })
+    })
+    const address = liveProxyServer.address() as AddressInfo
+    const res = await fetch(
+      `http://127.0.0.1:${address.port}/video/${DIRECT_VIDEO_ID}.mp4`,
+      { redirect: 'manual' }
+    )
+    assert.equal(res.status, 302)
+    assert.equal(
+      res.headers.get('location'),
+      `/live/${DIRECT_VIDEO_ID}/live.m3u8`
+    )
+  } finally {
+    if (liveProxyServer) {
+      const s = liveProxyServer
+      await new Promise<void>((resolve, reject) => {
+        s.close((err) => {
+          if (err) reject(err)
+          else resolve()
+        })
+      })
+    }
+    fs.rmSync(liveProxyDataDir, { recursive: true, force: true })
+  }
+})
+
 test('GET /:playlistId/:position.mp4 in relay mode redirects to the resolved HLS master manifest URL', async () => {
   const relayDataDir = fs.mkdtempSync(
     path.join(os.tmpdir(), 'yrp-route-test-relay-')

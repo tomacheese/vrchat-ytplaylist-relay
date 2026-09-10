@@ -73,6 +73,23 @@ Live `proxy` では videoId ごとに ffmpeg プロセスが 1 つ常駐し、�
 > 解決に失敗した場合のみ従来通り `redirect`) に変更された。`hybrid` を使っている既存の
 > デプロイは、この挙動の変化を踏まえて動作確認すること。
 
+## 任意の videoId を直接指定する Endpoint (`GET /video/:videoId`)
+
+`GET /:playlistId/:position.mp4` と同様の配信方式判定 (`MEDIA_DELIVERY_MODE` /
+`LIVE_DELIVERY_MODE`) を、Playlist/position を経由せず任意の YouTube videoId に対して直接使う
+Endpoint。`GET /video/:videoId` と `GET /video/:videoId.mp4` のどちらの形式でもアクセスできる
+(拡張子は任意)。`playlistId` の allowlist (`config/playlists.json`) を経由しないため、`proxy` /
+`hybrid` モードでは allowlist 外の動画にもアクセスできる点に注意すること。
+
+> [!WARNING]
+> `config/playlists.json` に `playlistId: "video"` を設定しないこと。この Endpoint は
+> `GET /:playlistId/:position.mp4` より前に登録されており、`playlistId` が文字列 `"video"`
+> と一致すると、この Endpoint に奪われ Playlist 経由でアクセスできなくなる。
+
+Live `proxy` モードの再公開ファイルは `GET /:playlistId/:position/live/:file` とは別に
+`GET /live/:videoId/:file` からも配信される (`relay` モードは YouTube 自体の HLS manifest URL へ
+直接 302 するため、この Endpoint は使わない)。
+
 ## Docker
 
 `proxy` / `hybrid` モードは ffmpeg と、自己更新可能な yt-dlp standalone binary を必要とするため、

@@ -1,7 +1,8 @@
 import path from 'node:path'
 import { Router } from 'express'
+import type { Response } from 'express'
 import { rateLimit } from 'express-rate-limit'
-import { isPlaylistAllowed } from '../config'
+import { VIDEO_ID_PATTERN, isPlaylistAllowed } from '../config'
 import type { AppConfig } from '../config'
 import { liveRelayDirFor, touchLiveRelay } from '../live-relay'
 import { resolveVideoIdForPosition } from '../refresh'
@@ -17,13 +18,38 @@ const LIVE_FILE_PATTERN = /^live\.m3u8$|^live\d+\.ts$/
 const liveRateLimit = rateLimit({ windowMs: 60_000, limit: 60 })
 
 /**
- * GET /{playlistId}/{position}/live/{file}
- *
- * Live `proxy` モードで `ensureLiveRelay()` が再公開したローカル HLS ファイル (master playlist /
- * segment) を配信する。視聴中のクライアントはこのルートを master playlist / segment ごとに
- * 繰り返し fetch し続けるため、リクエストの都度 `touchLiveRelay()` で該当 videoId の
- * `lastAccessedAt` を更新する (`evictIdleLiveRelays()` が視聴中のプロセスを誤ってアイドル判定
- * しないようにするため)。
+ * videoId の Live 再公開ファイル (master playlist / segment) を配信する共通処理。
+ * `GET /{playlistId}/{position}/live/{file}` と `GET /live/{videoId}/{file}` の両方から、
+ * 呼び出し元でそれぞれの方法により解決済みの videoId を渡して呼ばれる。
+ * 視聴中のクライアントは master playlist / segment ごとに繰り返し fetch し続けるため、
+ * `touchLiveRelay()` で該当 videoId の `lastAccessedAt` を更新する。
+ * これは `evictIdleLiveRelays()` が視聴中のプロセスを誤ってアイドル判定しないようにするためである。
+ */
+function serveLiveFile(
+  config: AppConfig,
+  videoId: string,
+  file: string,
+  res: Response
+): void {
+  if (!LIVE_FILE_PATTERN.test(file)) {
+    res.status(404).json({ error: 'invalid file' })
+    return
+  }
+  touchLiveRelay(videoId)
+  const baseDir = liveRelayDirFor(config, videoId)
+  const filePath = path.join(baseDir, file)
+  // LIVE_FILE_PATTERN で file を検証済みだが、静的解析ツールが正しく安全性を
+  // 追跡できるよう、送信直前にも解決後パスが baseDir 配下であることを明示的に確認する。
+  if (!path.resolve(filePath).startsWith(path.resolve(baseDir) + path.sep)) {
+    res.status(404).json({ error: 'invalid file' })
+    return
+  }
+  res.sendFile(filePath)
+}
+
+/**
+ * Live `proxy` モードで `ensureLiveRelay()` が再公開したローカル HLS ファイルを配信する 2 つの
+ * ルート (Playlist/position 経由、videoId 直接指定) をまとめる Router。
  */
 export function liveRouter(config: AppConfig): Router {
   const router = Router()
@@ -40,6 +66,8 @@ export function liveRouter(config: AppConfig): Router {
       res.status(404).json({ error: 'invalid position' })
       return
     }
+    // resolveVideoIdForPosition() は yt-dlp Refresh を伴いうる高コストな非同期処理のため、
+    // file の形式チェックはその呼び出し前に済ませ、不正な file で無駄な Refresh を防ぐ。
     if (!LIVE_FILE_PATTERN.test(file)) {
       res.status(404).json({ error: 'invalid file' })
       return
@@ -53,25 +81,29 @@ export function liveRouter(config: AppConfig): Router {
           res.status(status).json({ error: resolved.error })
           return
         }
-        const { videoId } = resolved
-        touchLiveRelay(videoId)
-        const baseDir = liveRelayDirFor(config, videoId)
-        const filePath = path.join(baseDir, file)
-        // LIVE_FILE_PATTERN で file を検証済みだが、静的解析ツールが正しく安全性を
-        // 追跡できるよう、送信直前にも解決後パスが baseDir 配下であることを明示的に確認する。
-        if (
-          !path.resolve(filePath).startsWith(path.resolve(baseDir) + path.sep)
-        ) {
-          res.status(404).json({ error: 'invalid file' })
-          return
-        }
-        res.sendFile(filePath)
+        serveLiveFile(config, resolved.videoId, file, res)
       })
       .catch((err: unknown) => {
         res.status(502).json({
           error: `failed to resolve position: ${(err as Error).message}`,
         })
       })
+  })
+
+  /**
+   * GET /live/{videoId}/{file}
+   *
+   * videoId を直接指定して Live 再公開ファイルを取得する (`../routes/video` の
+   * `LIVE_DELIVERY_MODE=proxy` から Redirect される)。Playlist を経由しないため
+   * `isPlaylistAllowed` は行わず、`VIDEO_ID_PATTERN` でのフォーマット検証のみ行う。
+   */
+  router.get('/live/:videoId/:file', liveRateLimit, (req, res) => {
+    const { videoId, file } = req.params
+    if (!VIDEO_ID_PATTERN.test(videoId)) {
+      res.status(404).json({ error: 'invalid videoId' })
+      return
+    }
+    serveLiveFile(config, videoId, file, res)
   })
 
   return router

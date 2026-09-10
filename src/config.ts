@@ -206,6 +206,11 @@ export function maxSlotsFor(config: AppConfig, playlistId: string): number {
 // 化けて dataDir の外にファイルを読み書きできてしまう (path traversal)。
 export const PLAYLIST_ID_PATTERN = /^[\w-]+$/
 
+// YouTube の videoId (11 文字、英数字・`_`・`-` のみ) は encodeURIComponent で `.` が変化しない。
+// そのため、この形式チェックをしないと videoId '..' が path.join で
+// 親ディレクトリへ抜けてしまう (path traversal)。
+export const VIDEO_ID_PATTERN = /^[\w-]{11}$/
+
 /**
  * playlistId が要求可能かどうかを判定する。
  * フォーマット (`PLAYLIST_ID_PATTERN`) を満たさないものは常に false。
