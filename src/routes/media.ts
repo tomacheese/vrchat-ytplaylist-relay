@@ -21,7 +21,11 @@ const POSITION_PATTERN = /^(\d+)\.mp4$/
 /** yt-dlp ダウンロード・ファイル配信を伴うため IP ごとに 1 分あたり 60 リクエストへ制限する (DoS 対策)。 */
 const mediaRateLimit = rateLimit({ windowMs: 60_000, limit: 60 })
 
-/** 解決済み videoId を YouTube 視聴 URL へ 302 Redirect する ("redirect" / フォールバックの共通処理)。 */
+/**
+ * 解決済み videoId を YouTube 視聴 URL へ 302 Redirect する。
+ * "redirect" モード本体と、"hybrid" モードで HLS manifest の解決に失敗した際のフォールバックの
+ * 両方から呼ばれる共通処理。
+ */
 function redirectToYoutube(res: Response, videoId: string): void {
   res.redirect(
     302,
@@ -29,6 +33,7 @@ function redirectToYoutube(res: Response, videoId: string): void {
   )
 }
 
+/** `config` の yt-dlp 実行オプションを使って videoId を解決する (`resolveVideoInfo` の薄いラッパー)。 */
 function resolveVideoInfoFor(
   config: AppConfig,
   videoId: string
@@ -89,6 +94,9 @@ function serveLiveProxy(
       res.status(502).json({
         error: `failed to start live relay: ${(err as Error).message}`,
       })
+      if (err instanceof YtdlpError && err.stderr.length > 0) {
+        logger.error(err.stderr)
+      }
     })
 }
 
@@ -185,6 +193,9 @@ export function mediaRouter(config: AppConfig): Router {
               res.status(502).json({
                 error: `failed to resolve position: ${(err as Error).message}`,
               })
+              if (err instanceof YtdlpError && err.stderr.length > 0) {
+                logger.error(err.stderr)
+              }
             })
           return
         }
@@ -233,6 +244,9 @@ export function mediaRouter(config: AppConfig): Router {
             res.status(502).json({
               error: `failed to resolve position: ${(err as Error).message}`,
             })
+            if (err instanceof YtdlpError && err.stderr.length > 0) {
+              logger.error(err.stderr)
+            }
           })
       })
       .catch((err: unknown) => {
