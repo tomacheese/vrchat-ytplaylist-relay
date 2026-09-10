@@ -1,10 +1,15 @@
+import { logger } from './logger'
 import type { RunYtdlpOptions } from './ytdlp'
 import { resolveVideoJson } from './ytdlp'
 
 /** yt-dlp -j の結果から抽出する、配信方式の決定に必要な最小限の情報。 */
 export interface ResolvedVideoInfo {
   isLive: boolean
-  /** HLS master manifest URL (video/audio 両方の variant を含む)。取得できなければ null。 */
+  /**
+   * 配信に使う HLS manifest URL。AVC1 (H.264) の legacy TS variant のうち最高画質のものを
+   * 優先し、無ければ YouTube 生の HLS master manifest URL にフォールバックする
+   * (`extractHlsMasterManifestUrl` 参照)。取得できなければ null。
+   */
   hlsMasterManifestUrl: string | null
 }
 
@@ -27,23 +32,68 @@ interface YtdlpVideoJson {
 }
 
 /**
- * `formats[]` を走査し、`protocol === 'm3u8_native'` かつ `manifest_url` が truthy な
- * 最初のエントリの `manifest_url` を返す。VOD・Live いずれでも各 format の manifest_url は
- * 同一の HLS master manifest URL を指すため、先頭 1 件で良い。
+ * `formats[]` から、VRChat (AVPro Video / Windows MediaFoundation) で安定して再生できる
+ * AVC1 (H.264) の legacy TS variant のうち最高画質の URL を選ぶ。YouTube 生の HLS master
+ * manifest (複数画質・複数コーデックの variant を含む multivariant playlist) をそのまま
+ * 渡すと、variant の選択が VRChat 同梱 yt-dlp / AVPro 側のロジックに委ねられる。その結果、
+ * VP9 + fMP4/CMAF の variant が選ばれて再生できないことがある (VRChat 公式フィードバックの
+ * 場で報告されている既知の不具合)。そのためサーバー側で単一 variant に確定させ、この
+ * 壊れやすい選択ロジックをバイパスする。
+ *
+ * 候補が無ければ、既存の挙動 (最初に見つかった `manifest_url`、AVC1 以外を含む master
+ * manifest) にフォールバックする。フォールバック発生時は `videoId` とともに警告ログを
+ * 出力する (既知の再生不具合を踏む可能性があるため運用上検知できるようにする)。
  */
-function extractHlsMasterManifestUrl(formats: unknown): string | null {
+function extractHlsMasterManifestUrl(
+  videoId: string,
+  formats: unknown
+): string | null {
   if (!Array.isArray(formats)) return null
+
+  let bestAvc1Url: string | null = null
+  let bestAvc1Height = -1
+  let fallbackManifestUrl: string | null = null
+
   for (const format of formats) {
     if (typeof format !== 'object' || format === null) continue
-    const { protocol, manifest_url: manifestUrl } = format as {
+    const {
+      protocol,
+      manifest_url: manifestUrl,
+      vcodec,
+      url,
+      height,
+    } = format as {
       protocol?: unknown
       manifest_url?: unknown
+      vcodec?: unknown
+      url?: unknown
+      height?: unknown
     }
-    if (protocol === 'm3u8_native' && typeof manifestUrl === 'string') {
-      return manifestUrl
+    if (protocol !== 'm3u8_native') continue
+
+    if (fallbackManifestUrl === null && typeof manifestUrl === 'string') {
+      fallbackManifestUrl = manifestUrl
+    }
+
+    if (
+      typeof url === 'string' &&
+      typeof height === 'number' &&
+      typeof vcodec === 'string' &&
+      vcodec.startsWith('avc1') &&
+      height > bestAvc1Height
+    ) {
+      bestAvc1Url = url
+      bestAvc1Height = height
     }
   }
-  return null
+
+  if (bestAvc1Url === null && fallbackManifestUrl !== null) {
+    logger.warn(
+      `No AVC1 HLS variant found for video ${videoId}; falling back to the raw master manifest URL (may hit the known VRChat/AVPro playback issue)`
+    )
+  }
+
+  return bestAvc1Url ?? fallbackManifestUrl
 }
 
 /**
@@ -67,7 +117,7 @@ export async function resolveVideoInfo(
   const raw = (await resolveVideoJson(videoId, options)) as YtdlpVideoJson
   const info: ResolvedVideoInfo = {
     isLive: raw.is_live === true,
-    hlsMasterManifestUrl: extractHlsMasterManifestUrl(raw.formats),
+    hlsMasterManifestUrl: extractHlsMasterManifestUrl(videoId, raw.formats),
   }
   resolveCache.set(videoId, { info, fetchedAt: Date.now() })
   return info

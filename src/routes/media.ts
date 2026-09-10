@@ -107,7 +107,7 @@ function serveLiveProxy(
     })
 }
 
-/** "relay" 配信ロジック: 解決済みの HLS master manifest URL へ 302 する。解決に失敗していれば 502。 */
+/** "relay" 配信ロジック: 解決済みの HLS manifest URL (AVC1 優先) へ 302 する。解決に失敗していれば 502。 */
 function serveRelay(info: ResolvedVideoInfo, res: Response): void {
   if (!info.hlsMasterManifestUrl) {
     res.status(502).json({ error: 'failed to resolve HLS manifest' })
@@ -132,8 +132,9 @@ function serveRelay(info: ResolvedVideoInfo, res: Response): void {
  * - "redirect": 動画バイト列を配信せず、解決した YouTube 動画へ 302 Redirect するだけ。
  *   VRChat の AVProVideoPlayer は youtube.com の URL をネイティブに解釈できるが、VRChat 同梱の
  *   制限付き yt-dlp が googlevideo.com 直リンクの解決に失敗し再生できないことがある。
- * - "relay": yt-dlp が解決した HLS master manifest URL へ 302 Redirect する。ffmpeg・
- *   ディスクキャッシュを使わないステートレスな配信方式 (VOD/Live 共通)。
+ * - "relay": yt-dlp が解決した HLS manifest URL (AVC1 の単一 variant を優先し、無ければ
+ *   YouTube 生の master manifest URL) へ 302 Redirect する。ffmpeg・ディスクキャッシュを
+ *   使わないステートレスな配信方式 (VOD/Live 共通)。
  * - "proxy" (VOD): Backend 自身が yt-dlp で動画をダウンロード・キャッシュし (media-cache.ts)、
  *   バイト列を直接配信する。ダウンロード完了まで応答をブロックするため、Client 側の Timeout に
  *   間に合わないことがある。

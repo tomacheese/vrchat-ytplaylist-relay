@@ -186,7 +186,8 @@ export function touchLiveRelay(videoId: string): void {
 }
 
 /**
- * resolveVideoInfo() で得た HLS master manifest URL を ffmpeg でローカルに再公開する。
+ * resolveVideoInfo() で得た HLS manifest URL (AVC1 優先、無ければ master manifest URL) を
+ * ffmpeg でローカルに再公開する。
  * `-c copy` により再エンコードなしでコンテナのみ HLS に変換する (Docker 実機検証済みのコマンド)。
  * `temp_file` フラグにより segment/playlist の書き込みを一時ファイル経由の rename にし、
  * `waitForFirstSegment` の `fs.watch` や `res.sendFile()` が書き込み途中のファイルを掴むのを防ぐ

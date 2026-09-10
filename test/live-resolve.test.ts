@@ -134,6 +134,170 @@ test('resolveVideoInfo picks the first m3u8_native manifest_url when multiple fo
   )
 })
 
+test('resolveVideoInfo picks the AVC1 variant url when it is the only candidate', async () => {
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yrp-live-resolve-test-'))
+  const { scriptPath } = makeFakeYtdlp(tmpDir, {
+    json: {
+      is_live: false,
+      formats: [
+        {
+          protocol: 'm3u8_native',
+          manifest_url: 'https://manifest.googlevideo.com/master.m3u8',
+          vcodec: 'avc1.4D401F',
+          height: 720,
+          url: 'https://manifest.googlevideo.com/720.m3u8',
+        },
+      ],
+    },
+  })
+
+  const info = await resolveVideoInfo('v1', {
+    ytdlpPath: scriptPath,
+    timeoutMs: 5000,
+    cacheTtlMs: 60_000,
+  })
+
+  assert.equal(
+    info.hlsMasterManifestUrl,
+    'https://manifest.googlevideo.com/720.m3u8'
+  )
+})
+
+test('resolveVideoInfo picks the highest-height AVC1 variant even when a VP9 variant has a higher height', async () => {
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yrp-live-resolve-test-'))
+  const { scriptPath } = makeFakeYtdlp(tmpDir, {
+    json: {
+      is_live: false,
+      formats: [
+        {
+          protocol: 'm3u8_native',
+          manifest_url: 'https://manifest.googlevideo.com/master.m3u8',
+          vcodec: 'avc1.4D401E',
+          height: 480,
+          url: 'https://manifest.googlevideo.com/480.m3u8',
+        },
+        {
+          protocol: 'm3u8_native',
+          manifest_url: 'https://manifest.googlevideo.com/master.m3u8',
+          vcodec: 'avc1.4D401F',
+          height: 720,
+          url: 'https://manifest.googlevideo.com/720.m3u8',
+        },
+        {
+          protocol: 'm3u8_native',
+          manifest_url: 'https://manifest.googlevideo.com/master.m3u8',
+          vcodec: 'vp09.00.40.08',
+          height: 1080,
+          url: 'https://manifest.googlevideo.com/1080-vp9.m3u8',
+        },
+      ],
+    },
+  })
+
+  const info = await resolveVideoInfo('v1', {
+    ytdlpPath: scriptPath,
+    timeoutMs: 5000,
+    cacheTtlMs: 60_000,
+  })
+
+  assert.equal(
+    info.hlsMasterManifestUrl,
+    'https://manifest.googlevideo.com/720.m3u8'
+  )
+})
+
+test('resolveVideoInfo keeps the first-seen AVC1 variant when two share the same height', async () => {
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yrp-live-resolve-test-'))
+  const { scriptPath } = makeFakeYtdlp(tmpDir, {
+    json: {
+      is_live: false,
+      formats: [
+        {
+          protocol: 'm3u8_native',
+          manifest_url: 'https://manifest.googlevideo.com/master.m3u8',
+          vcodec: 'avc1.4D401F',
+          height: 720,
+          url: 'https://manifest.googlevideo.com/720-first.m3u8',
+        },
+        {
+          protocol: 'm3u8_native',
+          manifest_url: 'https://manifest.googlevideo.com/master.m3u8',
+          vcodec: 'avc1.4D401F',
+          height: 720,
+          url: 'https://manifest.googlevideo.com/720-second.m3u8',
+        },
+      ],
+    },
+  })
+
+  const info = await resolveVideoInfo('v1', {
+    ytdlpPath: scriptPath,
+    timeoutMs: 5000,
+    cacheTtlMs: 60_000,
+  })
+
+  assert.equal(
+    info.hlsMasterManifestUrl,
+    'https://manifest.googlevideo.com/720-first.m3u8'
+  )
+})
+
+test('resolveVideoInfo falls back to manifest_url when an AVC1 format is missing url/height', async () => {
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yrp-live-resolve-test-'))
+  const { scriptPath } = makeFakeYtdlp(tmpDir, {
+    json: {
+      is_live: false,
+      formats: [
+        {
+          protocol: 'm3u8_native',
+          manifest_url: 'https://manifest.googlevideo.com/master.m3u8',
+          vcodec: 'avc1.4D401F',
+        },
+      ],
+    },
+  })
+
+  const info = await resolveVideoInfo('v1', {
+    ytdlpPath: scriptPath,
+    timeoutMs: 5000,
+    cacheTtlMs: 60_000,
+  })
+
+  assert.equal(
+    info.hlsMasterManifestUrl,
+    'https://manifest.googlevideo.com/master.m3u8'
+  )
+})
+
+test('resolveVideoInfo falls back to manifest_url when no AVC1 variant is present', async () => {
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yrp-live-resolve-test-'))
+  const { scriptPath } = makeFakeYtdlp(tmpDir, {
+    json: {
+      is_live: false,
+      formats: [
+        {
+          protocol: 'm3u8_native',
+          manifest_url: 'https://manifest.googlevideo.com/master.m3u8',
+          vcodec: 'vp09.00.40.08',
+          height: 1080,
+          url: 'https://manifest.googlevideo.com/1080-vp9.m3u8',
+        },
+      ],
+    },
+  })
+
+  const info = await resolveVideoInfo('v1', {
+    ytdlpPath: scriptPath,
+    timeoutMs: 5000,
+    cacheTtlMs: 60_000,
+  })
+
+  assert.equal(
+    info.hlsMasterManifestUrl,
+    'https://manifest.googlevideo.com/master.m3u8'
+  )
+})
+
 test('resolveVideoInfo returns hlsMasterManifestUrl: null when no m3u8_native format is present', async () => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yrp-live-resolve-test-'))
   const { scriptPath } = makeFakeYtdlp(tmpDir, {

@@ -39,7 +39,7 @@ Live (配信中) かで別々の環境変数から選ばれる。VOD は `MEDIA_
 | 値 | 挙動 | VOD | Live | 追加要件 |
 |---|---|---|---|---|
 | `redirect` (既定) | `https://www.youtube.com/watch?v=<videoId>` へ 302 Redirect | ✅ | ✅ | なし |
-| `relay` | Backend 自身の yt-dlp が解決した HLS master manifest URL へ 302 Redirect | ✅ | ✅ | なし |
+| `relay` | Backend 自身の yt-dlp が解決した HLS manifest URL へ 302 Redirect (AVC1 の legacy TS variant を優先選択し、無ければ master manifest URL) | ✅ | ✅ | なし |
 | `proxy` | VOD: yt-dlp + ffmpeg でダウンロード・キャッシュしバイト列を直接配信。Live: ffmpeg で HLS をローカル再公開し配信 | ✅ | ✅ | ffmpeg、ディスク容量 |
 | `hybrid` | キャッシュ済みなら `proxy` と同様に配信、未キャッシュなら裏でダウンロードを開始しつつ即座に `relay` 相当で 302 する (解決失敗時のみ `redirect`) | ✅ | ❌ (起動時エラー) | ffmpeg、ディスク容量 |
 
