@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
+import { VIDEO_ID_PATTERN } from './config'
 import type { AppConfig } from './config'
 import { KeyedMutex } from './lock'
 import { logger } from './logger'
@@ -11,13 +12,6 @@ export const LIVE_PLAYLIST_FILE_NAME = 'live.m3u8'
 
 /** ffmpeg `-f hls` が書き出す segment ファイル名のパターン (`live0.ts`, `live1.ts`, ...)。 */
 const SEGMENT_FILE_PATTERN = /^live\d+\.ts$/
-
-/**
- * YouTube の videoId 形式 (11 文字、英数字・`_`・`-` のみ)。`encodeURIComponent` は `.` を
- * 変換しないため、この形式チェックをしないと videoId `'..'` が `path.join` で親ディレクトリへ
- * 抜けてしまい (path traversal)、`fs.rm` の対象が Live 再公開ディレクトリの外まで及びかねない。
- */
-const VIDEO_ID_PATTERN = /^[\w-]{11}$/
 
 /** ffmpeg プロセスに SIGTERM を送ってから実際の終了を待つ猶予。超過時は SIGKILL へ切り替える。 */
 const STOP_GRACE_MS = 5000
