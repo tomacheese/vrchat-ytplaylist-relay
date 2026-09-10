@@ -53,6 +53,12 @@ export interface AppConfig {
   mediaCacheTtlMs: number
   /** "proxy" モードでの yt-dlp 動画ダウンロード 1 本あたりのタイムアウト (ms)。Playlist 一覧取得より時間がかかるため別枠で持つ。 */
   mediaDownloadTimeoutMs: number
+  /**
+   * Express の `trust proxy` 設定に渡す、信頼するリバースプロキシのホップ数。
+   * `X-Forwarded-For` から `req.ip` を解決する際、ソケットの接続元から遡ってこの数だけの
+   * エントリを信頼する。無条件信頼 (`true`) は行わない。
+   */
+  trustProxy: number
   playlists: PlaylistConfigEntry[]
 }
 
@@ -183,6 +189,7 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     mediaDownloadTimeoutMs:
       overrides.mediaDownloadTimeoutMs ??
       Number(process.env.MEDIA_DOWNLOAD_TIMEOUT_MS ?? 600_000),
+    trustProxy: overrides.trustProxy ?? Number(process.env.TRUST_PROXY ?? 1),
     playlists: overrides.playlists ?? serverConfig.playlists,
   }
 }

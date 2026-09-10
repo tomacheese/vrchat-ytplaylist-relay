@@ -75,6 +75,7 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     mediaCacheMaxBytes: 10 * 1024 * 1024 * 1024,
     mediaCacheTtlMs: 6 * 60 * 60 * 1000,
     mediaDownloadTimeoutMs: 600_000,
+    trustProxy: 1,
     playlists: [],
     ...overrides,
   }
