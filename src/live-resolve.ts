@@ -8,6 +8,7 @@ export interface ResolvedVideoInfo {
   hlsMasterManifestUrl: string | null
 }
 
+/** `resolveVideoInfo` の解決結果キャッシュエントリ。 */
 interface CacheEntry {
   info: ResolvedVideoInfo
   fetchedAt: number
@@ -28,7 +29,7 @@ interface YtdlpVideoJson {
 /**
  * `formats[]` を走査し、`protocol === 'm3u8_native'` かつ `manifest_url` が truthy な
  * 最初のエントリの `manifest_url` を返す。VOD・Live いずれでも各 format の manifest_url は
- * 同一の HLS master manifest URL を指すため、先頭 1 件で良い (Spec Constraints & Established Facts 1)。
+ * 同一の HLS master manifest URL を指すため、先頭 1 件で良い。
  */
 function extractHlsMasterManifestUrl(formats: unknown): string | null {
   if (!Array.isArray(formats)) return null

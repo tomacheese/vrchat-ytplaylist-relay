@@ -53,9 +53,9 @@ VOD の `proxy` / `hybrid` はいずれも、キャッシュが `MEDIA_CACHE_TTL
 VOD `proxy` / `hybrid` 関連の設定 (`.env.example` 参照): `MEDIA_MAX_HEIGHT` / `MEDIA_CACHE_DIR` /
 `MEDIA_CACHE_MAX_BYTES` / `MEDIA_CACHE_TTL_MS` / `MEDIA_DOWNLOAD_TIMEOUT_MS`。
 Live `proxy` 関連の設定: `LIVE_RELAY_OUT_DIR` (再公開先ディレクトリ) /
-`LIVE_RELAY_IDLE_TTL_MS` (最終アクセスからの ffmpeg 停止猶予、既定5分。視聴者がいなくなった
+`LIVE_RELAY_IDLE_TTL_MS` (最終アクセスからの ffmpeg 停止猶予、既定 5 分。視聴者がいなくなった
 Live 配信の ffmpeg プロセスを早めに止めるため、VOD の `MEDIA_CACHE_TTL_MS` より大幅に短い)。
-Live `proxy` では videoId ごとに ffmpeg プロセスが1つ常駐し、複数視聴者は同じ再公開ファイル
+Live `proxy` では videoId ごとに ffmpeg プロセスが 1 つ常駐し、複数視聴者は同じ再公開ファイル
 (playlist + segment) を fetch するだけなので、視聴者が増えても Backend 側の追加コストは
 静的ファイル配信のリクエスト数のみで済む。
 

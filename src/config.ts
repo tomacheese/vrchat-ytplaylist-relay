@@ -40,7 +40,7 @@ export interface AppConfig {
   /**
    * Live 再公開ファイルの配信ルートへのアクセスが途絶えてから、ffmpeg プロセスを停止するまでの
    * 猶予期間 (ms)。ディスク容量ではなく常駐 ffmpeg プロセス数が制約になるため、
-   * `mediaCacheTtlMs` (既定6時間) より大幅に短い既定値 (5分) にする。
+   * `mediaCacheTtlMs` (既定 6 時間) より大幅に短い既定値 (5 分) にする。
    */
   liveRelayIdleTtlMs: number
   /** "proxy" モードでダウンロードする動画の最大高さ (px)。YouTube 側のフォーマットから、これ以下で最高画質のものを選ぶ。 */
