@@ -2,13 +2,44 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterAll, beforeAll, test } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, test, vi } from 'vitest'
 import type { AddressInfo } from 'node:net'
 import type { Server } from 'node:http'
 import { createApp } from '../src/app'
 import type { AppConfig } from '../src/config'
+import { ensureLiveRelay, liveRelayDirFor } from '../src/live-relay'
+import { resolveVideoInfo } from '../src/live-resolve'
 import { buildManifest, persistSlotState } from '../src/manifest-store'
 import { primeManifestCacheForTests } from '../src/refresh'
+
+// isLive 判定 (resolveVideoInfo) と Live proxy 再公開 (ensureLiveRelay) は実 yt-dlp / ffmpeg に
+// 依存するため、Media Endpoint のモード分岐ロジック自体を検証するテストではモックする。
+// liveRelayDirFor / touchLiveRelay / stopLiveRelay は実ファイルシステムで動作を検証するため、
+// 元の実装のまま残す (部分モック)。
+vi.mock('../src/live-resolve', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/live-resolve')>()
+  return { ...actual, resolveVideoInfo: vi.fn() }
+})
+vi.mock('../src/live-relay', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/live-relay')>()
+  return { ...actual, ensureLiveRelay: vi.fn() }
+})
+
+beforeEach(() => {
+  // 既定では VOD (非 Live) 扱い。Live 判定に依存するテストは各テスト内で上書きする。
+  vi.mocked(resolveVideoInfo).mockResolvedValue({
+    isLive: false,
+    hlsMasterManifestUrl: null,
+  })
+  vi.mocked(ensureLiveRelay).mockResolvedValue({
+    error: 'ensureLiveRelay is not configured for this test',
+  })
+})
+
+afterEach(() => {
+  vi.mocked(resolveVideoInfo).mockReset()
+  vi.mocked(ensureLiveRelay).mockReset()
+})
 
 let server: Server
 let baseUrl: string
@@ -25,7 +56,10 @@ const config: AppConfig = {
   // テスト中に GET /manifest.json 経由で本物の yt-dlp が起動されないよう、TTL を長めに取り
   // メモリキャッシュを primeManifestCacheForTests() で直接投入する。
   manifestCacheTtlMs: 60_000,
-  deliveryMode: 'redirect',
+  mediaDeliveryMode: 'redirect',
+  liveDeliveryMode: 'redirect',
+  liveRelayOutDir: '',
+  liveRelayIdleTtlMs: 5 * 60 * 1000,
   mediaMaxHeight: 1080,
   mediaCacheDir: '',
   mediaCacheMaxBytes: 10 * 1024 * 1024 * 1024,
@@ -37,14 +71,20 @@ const config: AppConfig = {
 beforeAll(async () => {
   dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yrp-route-test-'))
   config.dataDir = dataDir
+  config.liveRelayOutDir = path.join(dataDir, 'live')
   config.mediaCacheDir = path.join(dataDir, 'cache')
 
   // slot 対応表と Manifest キャッシュを事前に生成しておく (yt-dlp の実行自体は別テストで検証済みのためここでは不要)。
+  // position 1 (liveVideo01) は liveRelayDirFor() (videoId の形式検証あり) を実装のまま経由する
+  // live-relay ルートのテスト専用に、YouTube videoId 形式 (11 文字) を満たす videoId を割り当てる。
   const { state, manifest } = buildManifest(
     null,
     'pl1',
     100,
-    [{ id: 'v1', title: 'Track 1', duration: 100 }],
+    [
+      { id: 'v1', title: 'Track 1', duration: 100 },
+      { id: 'liveVideo01', title: 'Live Track', duration: 100 },
+    ],
     Date.now()
   )
   persistSlotState(dataDir, state)
@@ -78,7 +118,7 @@ test('GET /:playlistId/manifest.json is public and returns the cached manifest',
   assert.equal(res.status, 200, 'manifest.json must NOT require Authorization')
   const body = (await res.json()) as { playlistId: string; tracks: unknown[] }
   assert.equal(body.playlistId, 'pl1')
-  assert.equal(body.tracks.length, 1)
+  assert.equal(body.tracks.length, 2)
 })
 
 test('GET /:playlistId/:position.mp4 is public and redirects to the canonical YouTube watch URL', async () => {
@@ -88,6 +128,430 @@ test('GET /:playlistId/:position.mp4 is public and redirects to the canonical Yo
     res.headers.get('location'),
     'https://www.youtube.com/watch?v=v1'
   )
+})
+
+test('GET /:playlistId/:position/live/:file serves the live-relay file and updates its lastAccessedAt', async () => {
+  const outDir = liveRelayDirFor(config, 'liveVideo01')
+  fs.mkdirSync(outDir, { recursive: true })
+  fs.writeFileSync(path.join(outDir, 'live.m3u8'), '#EXTM3U')
+  try {
+    const res = await fetch(`${baseUrl}/pl1/1/live/live.m3u8`)
+    assert.equal(res.status, 200)
+    assert.equal(await res.text(), '#EXTM3U')
+  } finally {
+    fs.rmSync(outDir, { recursive: true, force: true })
+  }
+})
+
+test('GET /:playlistId/:position/live/:file returns 404 for a file name outside the live.m3u8/live<N>.ts pattern', async () => {
+  const outDir = liveRelayDirFor(config, 'liveVideo01')
+  fs.mkdirSync(outDir, { recursive: true })
+  fs.writeFileSync(path.join(outDir, 'live.m3u8'), '#EXTM3U')
+  try {
+    const res = await fetch(
+      `${baseUrl}/pl1/1/live/${encodeURIComponent('../../etc/passwd')}`
+    )
+    assert.equal(res.status, 404)
+  } finally {
+    fs.rmSync(outDir, { recursive: true, force: true })
+  }
+})
+
+test('GET /:playlistId/:position/live/:file returns 404 when the live-relay file does not exist', async () => {
+  const res = await fetch(`${baseUrl}/pl1/1/live/live.m3u8`)
+  assert.equal(res.status, 404)
+})
+
+test('GET /:playlistId/:position.mp4 in relay mode redirects to the resolved HLS master manifest URL', async () => {
+  const relayDataDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'yrp-route-test-relay-')
+  )
+  const relayConfig: AppConfig = {
+    ...config,
+    dataDir: relayDataDir,
+    mediaDeliveryMode: 'relay',
+    liveDeliveryMode: 'relay',
+  }
+  vi.mocked(resolveVideoInfo).mockResolvedValue({
+    isLive: false,
+    hlsMasterManifestUrl: 'https://manifest.googlevideo.com/v1/master.m3u8',
+  })
+  const { state, manifest } = buildManifest(
+    null,
+    'pl1',
+    100,
+    [{ id: 'v1', title: 'Track 1', duration: 100 }],
+    Date.now()
+  )
+  persistSlotState(relayDataDir, state)
+  primeManifestCacheForTests('pl1', manifest)
+
+  const app = createApp(relayConfig)
+  let relayServer: Server | undefined
+  try {
+    relayServer = await new Promise<Server>((resolve) => {
+      const s = app.listen(0, '127.0.0.1', () => {
+        resolve(s)
+      })
+    })
+    const address = relayServer.address() as AddressInfo
+    const res = await fetch(`http://127.0.0.1:${address.port}/pl1/0.mp4`, {
+      redirect: 'manual',
+    })
+    assert.equal(res.status, 302)
+    assert.equal(
+      res.headers.get('location'),
+      'https://manifest.googlevideo.com/v1/master.m3u8'
+    )
+  } finally {
+    if (relayServer) {
+      const s = relayServer
+      await new Promise<void>((resolve, reject) => {
+        s.close((err) => {
+          if (err) reject(err)
+          else resolve()
+        })
+      })
+    }
+    fs.rmSync(relayDataDir, { recursive: true, force: true })
+  }
+})
+
+test('GET /:playlistId/:position.mp4 in relay mode returns 502 when the HLS manifest cannot be resolved', async () => {
+  const relayDataDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'yrp-route-test-relay-fail-')
+  )
+  const relayConfig: AppConfig = {
+    ...config,
+    dataDir: relayDataDir,
+    mediaDeliveryMode: 'relay',
+    liveDeliveryMode: 'relay',
+  }
+  vi.mocked(resolveVideoInfo).mockResolvedValue({
+    isLive: false,
+    hlsMasterManifestUrl: null,
+  })
+  const { state, manifest } = buildManifest(
+    null,
+    'pl1',
+    100,
+    [{ id: 'v1', title: 'Track 1', duration: 100 }],
+    Date.now()
+  )
+  persistSlotState(relayDataDir, state)
+  primeManifestCacheForTests('pl1', manifest)
+
+  const app = createApp(relayConfig)
+  let relayServer: Server | undefined
+  try {
+    relayServer = await new Promise<Server>((resolve) => {
+      const s = app.listen(0, '127.0.0.1', () => {
+        resolve(s)
+      })
+    })
+    const address = relayServer.address() as AddressInfo
+    const res = await fetch(`http://127.0.0.1:${address.port}/pl1/0.mp4`)
+    assert.equal(res.status, 502)
+  } finally {
+    if (relayServer) {
+      const s = relayServer
+      await new Promise<void>((resolve, reject) => {
+        s.close((err) => {
+          if (err) reject(err)
+          else resolve()
+        })
+      })
+    }
+    fs.rmSync(relayDataDir, { recursive: true, force: true })
+  }
+})
+
+test('GET /:playlistId/:position.mp4 in hybrid mode falls back to a relay redirect (not youtube.com) when the manifest resolves', async () => {
+  const hybridRelayDataDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'yrp-route-test-hybrid-relay-')
+  )
+  const hybridConfig: AppConfig = {
+    ...config,
+    dataDir: hybridRelayDataDir,
+    mediaCacheDir: path.join(hybridRelayDataDir, 'cache'),
+    mediaDeliveryMode: 'hybrid',
+    ytdlpPath: 'yt-dlp-does-not-exist',
+  }
+  vi.mocked(resolveVideoInfo).mockResolvedValue({
+    isLive: false,
+    hlsMasterManifestUrl: 'https://manifest.googlevideo.com/v1/master.m3u8',
+  })
+  const { state, manifest } = buildManifest(
+    null,
+    'pl1',
+    100,
+    [{ id: 'v1', title: 'Track 1', duration: 100 }],
+    Date.now()
+  )
+  persistSlotState(hybridRelayDataDir, state)
+  primeManifestCacheForTests('pl1', manifest)
+
+  const app = createApp(hybridConfig)
+  let hybridServer: Server | undefined
+  try {
+    hybridServer = await new Promise<Server>((resolve) => {
+      const s = app.listen(0, '127.0.0.1', () => {
+        resolve(s)
+      })
+    })
+    const address = hybridServer.address() as AddressInfo
+    const res = await fetch(`http://127.0.0.1:${address.port}/pl1/0.mp4`, {
+      redirect: 'manual',
+    })
+    assert.equal(res.status, 302)
+    assert.equal(
+      res.headers.get('location'),
+      'https://manifest.googlevideo.com/v1/master.m3u8'
+    )
+  } finally {
+    if (hybridServer) {
+      const s = hybridServer
+      await new Promise<void>((resolve, reject) => {
+        s.close((err) => {
+          if (err) reject(err)
+          else resolve()
+        })
+      })
+    }
+    fs.rmSync(hybridRelayDataDir, { recursive: true, force: true })
+  }
+})
+
+test('GET /:playlistId/:position.mp4 with a live video in proxy mode redirects to the live-relay route', async () => {
+  const liveProxyDataDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'yrp-route-test-live-proxy-')
+  )
+  const liveProxyConfig: AppConfig = {
+    ...config,
+    dataDir: liveProxyDataDir,
+    mediaDeliveryMode: 'redirect',
+    liveDeliveryMode: 'proxy',
+  }
+  vi.mocked(resolveVideoInfo).mockResolvedValue({
+    isLive: true,
+    hlsMasterManifestUrl: 'https://manifest.googlevideo.com/v1/master.m3u8',
+  })
+  vi.mocked(ensureLiveRelay).mockResolvedValue({
+    outDir: '/unused',
+    playlistFileName: 'live.m3u8',
+  })
+  const { state, manifest } = buildManifest(
+    null,
+    'pl1',
+    100,
+    [{ id: 'v1', title: 'Track 1', duration: 100 }],
+    Date.now()
+  )
+  persistSlotState(liveProxyDataDir, state)
+  primeManifestCacheForTests('pl1', manifest)
+
+  const app = createApp(liveProxyConfig)
+  let liveProxyServer: Server | undefined
+  try {
+    liveProxyServer = await new Promise<Server>((resolve) => {
+      const s = app.listen(0, '127.0.0.1', () => {
+        resolve(s)
+      })
+    })
+    const address = liveProxyServer.address() as AddressInfo
+    const res = await fetch(`http://127.0.0.1:${address.port}/pl1/0.mp4`, {
+      redirect: 'manual',
+    })
+    assert.equal(res.status, 302)
+    assert.equal(res.headers.get('location'), '/pl1/0/live/live.m3u8')
+  } finally {
+    if (liveProxyServer) {
+      const s = liveProxyServer
+      await new Promise<void>((resolve, reject) => {
+        s.close((err) => {
+          if (err) reject(err)
+          else resolve()
+        })
+      })
+    }
+    fs.rmSync(liveProxyDataDir, { recursive: true, force: true })
+  }
+})
+
+test('GET /:playlistId/:position.mp4 calls resolveVideoInfo even when mediaDeliveryMode === liveDeliveryMode === "proxy" (proxy is never skipped)', async () => {
+  const proxySameModeDataDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'yrp-route-test-proxy-same-mode-')
+  )
+  const proxySameModeConfig: AppConfig = {
+    ...config,
+    dataDir: proxySameModeDataDir,
+    mediaCacheDir: path.join(proxySameModeDataDir, 'cache'),
+    mediaDeliveryMode: 'proxy',
+    liveDeliveryMode: 'proxy',
+  }
+  vi.mocked(resolveVideoInfo).mockResolvedValue({
+    isLive: true,
+    hlsMasterManifestUrl: 'https://manifest.googlevideo.com/v1/master.m3u8',
+  })
+  vi.mocked(ensureLiveRelay).mockResolvedValue({
+    outDir: '/unused',
+    playlistFileName: 'live.m3u8',
+  })
+  const { state, manifest } = buildManifest(
+    null,
+    'pl1',
+    100,
+    [{ id: 'v1', title: 'Track 1', duration: 100 }],
+    Date.now()
+  )
+  persistSlotState(proxySameModeDataDir, state)
+  primeManifestCacheForTests('pl1', manifest)
+
+  const app = createApp(proxySameModeConfig)
+  let proxyServer: Server | undefined
+  try {
+    proxyServer = await new Promise<Server>((resolve) => {
+      const s = app.listen(0, '127.0.0.1', () => {
+        resolve(s)
+      })
+    })
+    const address = proxyServer.address() as AddressInfo
+    // isLive 判定がスキップされていれば VOD proxy パス (getOrDownload) に入り、実在しない
+    // videoId 'v1' への実 yt-dlp 呼び出しが失敗して 502 になる。isLive: true を正しく反映していれば
+    // Live proxy パス (ensureLiveRelay) に入り、live route への 302 になる。
+    const res = await fetch(`http://127.0.0.1:${address.port}/pl1/0.mp4`, {
+      redirect: 'manual',
+    })
+    assert.equal(res.status, 302)
+    assert.equal(res.headers.get('location'), '/pl1/0/live/live.m3u8')
+  } finally {
+    if (proxyServer) {
+      const s = proxyServer
+      await new Promise<void>((resolve, reject) => {
+        s.close((err) => {
+          if (err) reject(err)
+          else resolve()
+        })
+      })
+    }
+    fs.rmSync(proxySameModeDataDir, { recursive: true, force: true })
+  }
+})
+
+test('GET /:playlistId/:position.mp4 with a live video hits the "redirect" branch of the effectiveMode switch when liveDeliveryMode differs from mediaDeliveryMode', async () => {
+  const liveRedirectDataDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'yrp-route-test-live-redirect-')
+  )
+  const liveRedirectConfig: AppConfig = {
+    ...config,
+    dataDir: liveRedirectDataDir,
+    mediaCacheDir: path.join(liveRedirectDataDir, 'cache'),
+    // mediaDeliveryMode !== liveDeliveryMode なので skipLiveCheck の対象外
+    // (effectiveMode の switch 文自体の "redirect" ケースを経由させる)。
+    mediaDeliveryMode: 'proxy',
+    liveDeliveryMode: 'redirect',
+  }
+  vi.mocked(resolveVideoInfo).mockResolvedValue({
+    isLive: true,
+    hlsMasterManifestUrl: 'https://manifest.googlevideo.com/v1/master.m3u8',
+  })
+  const { state, manifest } = buildManifest(
+    null,
+    'pl1',
+    100,
+    [{ id: 'v1', title: 'Track 1', duration: 100 }],
+    Date.now()
+  )
+  persistSlotState(liveRedirectDataDir, state)
+  primeManifestCacheForTests('pl1', manifest)
+
+  const app = createApp(liveRedirectConfig)
+  let liveRedirectServer: Server | undefined
+  try {
+    liveRedirectServer = await new Promise<Server>((resolve) => {
+      const s = app.listen(0, '127.0.0.1', () => {
+        resolve(s)
+      })
+    })
+    const address = liveRedirectServer.address() as AddressInfo
+    const res = await fetch(`http://127.0.0.1:${address.port}/pl1/0.mp4`, {
+      redirect: 'manual',
+    })
+    assert.equal(res.status, 302)
+    assert.equal(
+      res.headers.get('location'),
+      'https://www.youtube.com/watch?v=v1'
+    )
+  } finally {
+    if (liveRedirectServer) {
+      const s = liveRedirectServer
+      await new Promise<void>((resolve, reject) => {
+        s.close((err) => {
+          if (err) reject(err)
+          else resolve()
+        })
+      })
+    }
+    fs.rmSync(liveRedirectDataDir, { recursive: true, force: true })
+  }
+})
+
+test('GET /:playlistId/:position.mp4 with a live video hits the "relay" branch of the effectiveMode switch when liveDeliveryMode differs from mediaDeliveryMode', async () => {
+  const liveRelayModeDataDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'yrp-route-test-live-relay-mode-')
+  )
+  const liveRelayModeConfig: AppConfig = {
+    ...config,
+    dataDir: liveRelayModeDataDir,
+    mediaCacheDir: path.join(liveRelayModeDataDir, 'cache'),
+    // mediaDeliveryMode !== liveDeliveryMode なので skipLiveCheck の対象外
+    // (effectiveMode の switch 文自体の "relay" ケースを経由させる)。
+    mediaDeliveryMode: 'proxy',
+    liveDeliveryMode: 'relay',
+  }
+  vi.mocked(resolveVideoInfo).mockResolvedValue({
+    isLive: true,
+    hlsMasterManifestUrl: 'https://manifest.googlevideo.com/v1/master.m3u8',
+  })
+  const { state, manifest } = buildManifest(
+    null,
+    'pl1',
+    100,
+    [{ id: 'v1', title: 'Track 1', duration: 100 }],
+    Date.now()
+  )
+  persistSlotState(liveRelayModeDataDir, state)
+  primeManifestCacheForTests('pl1', manifest)
+
+  const app = createApp(liveRelayModeConfig)
+  let liveRelayModeServer: Server | undefined
+  try {
+    liveRelayModeServer = await new Promise<Server>((resolve) => {
+      const s = app.listen(0, '127.0.0.1', () => {
+        resolve(s)
+      })
+    })
+    const address = liveRelayModeServer.address() as AddressInfo
+    const res = await fetch(`http://127.0.0.1:${address.port}/pl1/0.mp4`, {
+      redirect: 'manual',
+    })
+    assert.equal(res.status, 302)
+    assert.equal(
+      res.headers.get('location'),
+      'https://manifest.googlevideo.com/v1/master.m3u8'
+    )
+  } finally {
+    if (liveRelayModeServer) {
+      const s = liveRelayModeServer
+      await new Promise<void>((resolve, reject) => {
+        s.close((err) => {
+          if (err) reject(err)
+          else resolve()
+        })
+      })
+    }
+    fs.rmSync(liveRelayModeDataDir, { recursive: true, force: true })
+  }
 })
 
 test.skipIf(process.env.RUN_INTEGRATION !== '1')(
@@ -100,7 +564,7 @@ test.skipIf(process.env.RUN_INTEGRATION !== '1')(
       ...config,
       dataDir: proxyDataDir,
       mediaCacheDir: path.join(proxyDataDir, 'cache'),
-      deliveryMode: 'proxy',
+      mediaDeliveryMode: 'proxy',
       mediaDownloadTimeoutMs: 600_000,
     }
     // "v1" は buildManifest でのテスト用ダミー videoId なので、実在の動画 ID に上書きする。
@@ -151,7 +615,7 @@ test('GET /:playlistId/:position.mp4 in hybrid mode falls back to a YouTube redi
     ...config,
     dataDir: hybridDataDir,
     mediaCacheDir: path.join(hybridDataDir, 'cache'),
-    deliveryMode: 'hybrid',
+    mediaDeliveryMode: 'hybrid',
     // バックグラウンドダウンロードは失敗させて即終わらせる (redirect フォールバック自体の検証が目的のため)。
     ytdlpPath: 'yt-dlp-does-not-exist',
   }
@@ -216,7 +680,7 @@ test('GET /:playlistId/:position.mp4 in hybrid mode serves cached bytes directly
     ...config,
     dataDir: hybridDataDir,
     mediaCacheDir: cacheDir,
-    deliveryMode: 'hybrid',
+    mediaDeliveryMode: 'hybrid',
   }
   const { state, manifest } = buildManifest(
     null,
@@ -276,7 +740,7 @@ test('GET /:playlistId/:position.mp4 in proxy mode serves stale cached bytes dir
     ...config,
     dataDir: proxyDataDir,
     mediaCacheDir: cacheDir,
-    deliveryMode: 'proxy',
+    mediaDeliveryMode: 'proxy',
     // 裏の再ダウンロードは失敗させて即終わらせる (stale 配信自体の検証が目的のため)。
     ytdlpPath: 'yt-dlp-does-not-exist',
   }
@@ -337,7 +801,7 @@ test('GET /:playlistId/:position.mp4 in hybrid mode serves stale cached bytes di
     ...config,
     dataDir: hybridDataDir,
     mediaCacheDir: cacheDir,
-    deliveryMode: 'hybrid',
+    mediaDeliveryMode: 'hybrid',
     ytdlpPath: 'yt-dlp-does-not-exist',
   }
   const { state, manifest } = buildManifest(

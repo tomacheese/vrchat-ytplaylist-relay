@@ -14,7 +14,8 @@ export function rootRouter(config: AppConfig): Router {
     res.status(200).json({
       name: 'vrchat-ytplaylist-relay',
       status: 'ok',
-      deliveryMode: config.deliveryMode,
+      mediaDeliveryMode: config.mediaDeliveryMode,
+      liveDeliveryMode: config.liveDeliveryMode,
       playlists: config.playlists.map((p) => p.playlistId),
       endpoints: {
         health: '/health',

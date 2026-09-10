@@ -73,3 +73,100 @@ test('isPlaylistAllowed rejects path-traversal-shaped playlistIds even when the 
   assert.equal(isPlaylistAllowed(config, '..'), false)
   assert.equal(isPlaylistAllowed(config, '../secret'), false)
 })
+
+test('loadConfig defaults liveRelayOutDir to "./data/live" when unset', () => {
+  const config = loadConfig({
+    configPath: path.join(os.tmpdir(), 'yrp-config-test-unused.json'),
+    playlists: [],
+  })
+
+  assert.equal(config.liveRelayOutDir, path.resolve('./data/live'))
+})
+
+test('loadConfig defaults liveRelayIdleTtlMs to 5 minutes when unset', () => {
+  const config = loadConfig({
+    configPath: path.join(os.tmpdir(), 'yrp-config-test-unused.json'),
+    playlists: [],
+  })
+
+  assert.equal(config.liveRelayIdleTtlMs, 5 * 60 * 1000)
+})
+
+test('loadConfig defaults mediaDeliveryMode to "redirect" when unset', () => {
+  const config = loadConfig({
+    configPath: path.join(os.tmpdir(), 'yrp-config-test-unused.json'),
+    playlists: [],
+  })
+
+  assert.equal(config.mediaDeliveryMode, 'redirect')
+})
+
+test('loadConfig accepts "relay" as a valid mediaDeliveryMode', () => {
+  const config = loadConfig({
+    configPath: path.join(os.tmpdir(), 'yrp-config-test-unused.json'),
+    playlists: [],
+    mediaDeliveryMode: 'relay',
+  })
+
+  assert.equal(config.mediaDeliveryMode, 'relay')
+})
+
+test('loadConfig rejects an invalid mediaDeliveryMode', () => {
+  assert.throws(() => {
+    loadConfig({
+      configPath: path.join(os.tmpdir(), 'yrp-config-test-unused.json'),
+      playlists: [],
+      mediaDeliveryMode: 'bogus' as unknown as never,
+    })
+  }, /MEDIA_DELIVERY_MODE/)
+})
+
+test('loadConfig defaults liveDeliveryMode to "redirect" when unset', () => {
+  const config = loadConfig({
+    configPath: path.join(os.tmpdir(), 'yrp-config-test-unused.json'),
+    playlists: [],
+  })
+
+  assert.equal(config.liveDeliveryMode, 'redirect')
+})
+
+test('loadConfig accepts "relay" and "proxy" as valid liveDeliveryMode values', () => {
+  const relayConfig = loadConfig({
+    configPath: path.join(os.tmpdir(), 'yrp-config-test-unused.json'),
+    playlists: [],
+    liveDeliveryMode: 'relay',
+  })
+  assert.equal(relayConfig.liveDeliveryMode, 'relay')
+
+  const proxyConfig = loadConfig({
+    configPath: path.join(os.tmpdir(), 'yrp-config-test-unused.json'),
+    playlists: [],
+    liveDeliveryMode: 'proxy',
+  })
+  assert.equal(proxyConfig.liveDeliveryMode, 'proxy')
+})
+
+test('loadConfig rejects "hybrid" as a liveDeliveryMode', () => {
+  assert.throws(() => {
+    loadConfig({
+      configPath: path.join(os.tmpdir(), 'yrp-config-test-unused.json'),
+      playlists: [],
+      liveDeliveryMode: 'hybrid' as unknown as never,
+    })
+  }, /LIVE_DELIVERY_MODE/)
+})
+
+test('loadConfig treats an empty-string liveDeliveryMode override as unset (defaults to "redirect")', () => {
+  const originalEnv = process.env.LIVE_DELIVERY_MODE
+  process.env.LIVE_DELIVERY_MODE = ''
+  try {
+    const config = loadConfig({
+      configPath: path.join(os.tmpdir(), 'yrp-config-test-unused.json'),
+      playlists: [],
+    })
+    assert.equal(config.liveDeliveryMode, 'redirect')
+  } finally {
+    if (originalEnv === undefined) delete process.env.LIVE_DELIVERY_MODE
+    else process.env.LIVE_DELIVERY_MODE = originalEnv
+  }
+})
