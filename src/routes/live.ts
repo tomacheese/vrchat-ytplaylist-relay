@@ -55,7 +55,16 @@ export function liveRouter(config: AppConfig): Router {
         }
         const { videoId } = resolved
         touchLiveRelay(videoId)
-        const filePath = path.join(liveRelayDirFor(config, videoId), file)
+        const baseDir = liveRelayDirFor(config, videoId)
+        const filePath = path.join(baseDir, file)
+        // LIVE_FILE_PATTERN で file を検証済みだが、静的解析ツールが正しく安全性を
+        // 追跡できるよう、送信直前にも解決後パスが baseDir 配下であることを明示的に確認する。
+        if (
+          !path.resolve(filePath).startsWith(path.resolve(baseDir) + path.sep)
+        ) {
+          res.status(404).json({ error: 'invalid file' })
+          return
+        }
         res.sendFile(filePath)
       })
       .catch((err: unknown) => {

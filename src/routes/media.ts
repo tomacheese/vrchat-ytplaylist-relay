@@ -85,9 +85,11 @@ function serveLiveProxy(
         res.status(502).json({ error: result.error })
         return
       }
+      // playlistId は呼び出し元 (mediaRouter) で isPlaylistAllowed() 済みだが、静的解析ツールが
+      // 正しく安全性を追跡できるよう、Redirect 先の組み立て時にも明示的にエンコードする。
       res.redirect(
         302,
-        `/${playlistId}/${position}/live/${result.playlistFileName}`
+        `/${encodeURIComponent(playlistId)}/${position}/live/${encodeURIComponent(result.playlistFileName)}`
       )
     })
     .catch((err: unknown) => {
