@@ -9,6 +9,7 @@ import { rootRouter } from './routes/root'
 
 export function createApp(config: AppConfig): Express {
   const app = express()
+  app.set('trust proxy', config.trustProxy)
   app.disable('x-powered-by')
   app.use(express.json())
 

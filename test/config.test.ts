@@ -170,3 +170,42 @@ test('loadConfig treats an empty-string liveDeliveryMode override as unset (defa
     else process.env.LIVE_DELIVERY_MODE = originalEnv
   }
 })
+
+test('loadConfig defaults trustProxy to 1 when TRUST_PROXY is unset', () => {
+  const originalEnv = process.env.TRUST_PROXY
+  delete process.env.TRUST_PROXY
+  try {
+    const config = loadConfig({
+      configPath: path.join(os.tmpdir(), 'yrp-config-test-unused.json'),
+      playlists: [],
+    })
+    assert.equal(config.trustProxy, 1)
+  } finally {
+    if (originalEnv === undefined) delete process.env.TRUST_PROXY
+    else process.env.TRUST_PROXY = originalEnv
+  }
+})
+
+test('loadConfig reads trustProxy from TRUST_PROXY', () => {
+  const originalEnv = process.env.TRUST_PROXY
+  process.env.TRUST_PROXY = '2'
+  try {
+    const config = loadConfig({
+      configPath: path.join(os.tmpdir(), 'yrp-config-test-unused.json'),
+      playlists: [],
+    })
+    assert.equal(config.trustProxy, 2)
+  } finally {
+    if (originalEnv === undefined) delete process.env.TRUST_PROXY
+    else process.env.TRUST_PROXY = originalEnv
+  }
+})
+
+test('loadConfig prefers overrides.trustProxy over TRUST_PROXY', () => {
+  const config = loadConfig({
+    configPath: path.join(os.tmpdir(), 'yrp-config-test-unused.json'),
+    playlists: [],
+    trustProxy: 5,
+  })
+  assert.equal(config.trustProxy, 5)
+})

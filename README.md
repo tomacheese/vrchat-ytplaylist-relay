@@ -22,6 +22,14 @@ playlistId をそのまま取得・配信する (事前登録不要)。特定の
 Playlist ごとに `maxSlots` を上書きしたい場合は `cp config/playlists.json.example
 config/playlists.json` して編集する。設定すると、一覧に無い playlistId は 404 になる。
 
+## リバースプロキシ配下での実行 (`TRUST_PROXY`)
+
+Nginx 等のリバースプロキシ配下で稼働させる場合、Express の `trust proxy` 設定
+(`TRUST_PROXY` 環境変数、既定値 `1`) を実際のプロキシ段数に合わせる必要がある。
+設定が実際の段数と異なると `express-rate-limit` が `ERR_ERL_UNEXPECTED_X_FORWARDED_FOR`
+を出力したり、rate limit のクライアント識別 (`req.ip`) が意図せずプロキシの IP に
+なったりする。`app.set('trust proxy', true)` のような無条件信頼は行わない。
+
 ## Media 配信方式 (`MEDIA_DELIVERY_MODE` / `LIVE_DELIVERY_MODE`)
 
 `GET /:playlistId/:position.mp4` の配信方式は、解決した動画が VOD (通常動画) か

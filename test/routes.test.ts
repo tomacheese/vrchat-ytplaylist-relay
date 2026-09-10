@@ -65,6 +65,7 @@ const config: AppConfig = {
   mediaCacheMaxBytes: 10 * 1024 * 1024 * 1024,
   mediaCacheTtlMs: 6 * 60 * 60 * 1000,
   mediaDownloadTimeoutMs: 600_000,
+  trustProxy: 1,
   playlists: [{ playlistId: 'pl1', displayName: 'Test Playlist' }],
 }
 
@@ -91,6 +92,12 @@ beforeAll(async () => {
   primeManifestCacheForTests('pl1', manifest)
 
   const app = createApp(config)
+  // trust proxy 設定 (config.trustProxy) が req.ip に反映されることを検証するためのテスト専用ルート。
+  // "/:playlistId/:positionFile" (mediaRouter) など既存の 2 セグメント動的ルートと衝突しないよう、
+  // 単一セグメントのパスにする。
+  app.get('/__test-ip', (req, res) => {
+    res.status(200).json({ ip: req.ip })
+  })
   await new Promise<void>((resolve) => {
     server = app.listen(0, '127.0.0.1', resolve)
   })
@@ -106,6 +113,14 @@ afterAll(async () => {
     })
   })
   fs.rmSync(dataDir, { recursive: true, force: true })
+})
+
+test('req.ip reflects X-Forwarded-For when trust proxy is configured', async () => {
+  const res = await fetch(`${baseUrl}/__test-ip`, {
+    headers: { 'X-Forwarded-For': '203.0.113.1' },
+  })
+  const body = (await res.json()) as { ip: string }
+  assert.equal(body.ip, '203.0.113.1')
 })
 
 test('GET /health is public (no Authorization required)', async () => {
