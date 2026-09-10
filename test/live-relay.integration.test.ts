@@ -18,9 +18,9 @@ const LIVE_VIDEO_ID = 'jfKfPfyJRdk'
 
 let outDir: string | undefined
 
-afterEach(() => {
+afterEach(async () => {
   clearResolveCache()
-  stopLiveRelay(LIVE_VIDEO_ID)
+  await stopLiveRelay(LIVE_VIDEO_ID)
   if (!outDir) return
   fs.rmSync(outDir, { recursive: true, force: true })
   outDir = undefined
