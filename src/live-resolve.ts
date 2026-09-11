@@ -6,8 +6,8 @@ import { resolveVideoJson } from './ytdlp'
 export interface ResolvedVideoInfo {
   isLive: boolean
   /**
-   * 配信に使う HLS manifest URL。AVC1 (H.264) の legacy TS variant のうち最高画質のものを
-   * 優先し、無ければ YouTube 生の HLS master manifest URL にフォールバックする
+   * 配信に使う HLS manifest URL。音声トラックを含む AVC1 (H.264) の legacy TS variant のうち
+   * 最高画質のものを優先し、無ければ YouTube 生の HLS master manifest URL にフォールバックする
    * (`extractHlsMasterManifestUrl` 参照)。取得できなければ null。
    */
   hlsMasterManifestUrl: string | null
@@ -40,6 +40,11 @@ interface YtdlpVideoJson {
  * 場で報告されている既知の不具合)。そのためサーバー側で単一 variant に確定させ、この
  * 壊れやすい選択ロジックをバイパスする。
  *
+ * legacy TS variant には映像のみ (音声トラックを持たない) のものも存在するため、
+ * `acodec` が `'none'` (yt-dlp が音声なしフォーマットに付与する値) の候補は除外し、
+ * 音声付き variant のみを選択対象にする。除外しないと画質優先の比較で
+ * 音声なし variant が選ばれてしまい、relay モードの再生で音声が無くなる。
+ *
  * 候補が無ければ、既存の挙動 (最初に見つかった `manifest_url`、AVC1 以外を含む master
  * manifest) にフォールバックする。フォールバック発生時は `videoId` とともに警告ログを
  * 出力する (既知の再生不具合を踏む可能性があるため運用上検知できるようにする)。
@@ -60,22 +65,25 @@ function extractHlsMasterManifestUrl(
       protocol,
       manifest_url: manifestUrl,
       vcodec,
+      acodec,
       url,
       height,
     } = format as {
       protocol?: unknown
       manifest_url?: unknown
       vcodec?: unknown
+      acodec?: unknown
       url?: unknown
       height?: unknown
     }
     if (protocol !== 'm3u8_native') continue
 
-    if (fallbackManifestUrl === null && typeof manifestUrl === 'string') {
+    if (typeof manifestUrl === 'string' && fallbackManifestUrl === null) {
       fallbackManifestUrl = manifestUrl
     }
 
     if (
+      acodec !== 'none' &&
       typeof url === 'string' &&
       typeof height === 'number' &&
       typeof vcodec === 'string' &&

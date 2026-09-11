@@ -242,6 +242,44 @@ test('resolveVideoInfo keeps the first-seen AVC1 variant when two share the same
   )
 })
 
+test('resolveVideoInfo skips an audio-less AVC1 variant in favor of a lower-height muxed one', async () => {
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yrp-live-resolve-test-'))
+  const { scriptPath } = makeFakeYtdlp(tmpDir, {
+    json: {
+      is_live: false,
+      formats: [
+        {
+          protocol: 'm3u8_native',
+          manifest_url: 'https://manifest.googlevideo.com/master.m3u8',
+          vcodec: 'avc1.4D401F',
+          acodec: 'none',
+          height: 1080,
+          url: 'https://manifest.googlevideo.com/1080-video-only.m3u8',
+        },
+        {
+          protocol: 'm3u8_native',
+          manifest_url: 'https://manifest.googlevideo.com/master.m3u8',
+          vcodec: 'avc1.4D401E',
+          acodec: 'mp4a.40.2',
+          height: 480,
+          url: 'https://manifest.googlevideo.com/480-muxed.m3u8',
+        },
+      ],
+    },
+  })
+
+  const info = await resolveVideoInfo('v1', {
+    ytdlpPath: scriptPath,
+    timeoutMs: 5000,
+    cacheTtlMs: 60_000,
+  })
+
+  assert.equal(
+    info.hlsMasterManifestUrl,
+    'https://manifest.googlevideo.com/480-muxed.m3u8'
+  )
+})
+
 test('resolveVideoInfo falls back to manifest_url when an AVC1 format is missing url/height', async () => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yrp-live-resolve-test-'))
   const { scriptPath } = makeFakeYtdlp(tmpDir, {
