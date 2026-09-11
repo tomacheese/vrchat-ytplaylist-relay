@@ -42,8 +42,8 @@ interface YtdlpVideoJson {
  *
  * legacy TS variant には映像のみ (音声トラックを持たない) のものも存在するため、
  * `acodec` が `'none'` (yt-dlp が音声なしフォーマットに付与する値) の候補は除外し、
- * 音声付き variant のみを選択対象にする。これを怠ると、画質優先の比較で音声なし
- * variant が選ばれてしまい、relay モードの再生で音声が無くなる不具合につながる。
+ * 音声付き variant のみを選択対象にする。除外しないと画質優先の比較で
+ * 音声なし variant が選ばれてしまい、relay モードの再生で音声が無くなる。
  *
  * 候補が無ければ、既存の挙動 (最初に見つかった `manifest_url`、AVC1 以外を含む master
  * manifest) にフォールバックする。フォールバック発生時は `videoId` とともに警告ログを
