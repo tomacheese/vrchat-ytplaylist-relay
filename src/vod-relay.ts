@@ -25,6 +25,8 @@ interface VodRelayState {
   audio: ParsedPlaylist
   videoInit: Buffer | null
   audioInit: Buffer | null
+  /** 各 segment の開始時刻 (秒。playlist 上の EXTINF の累計)。 */
+  starts: number[]
   done: Set<number>
   inflight: Map<number, Promise<string>>
   /** 多重化済み segment の合計サイズ (bytes)。 */
@@ -109,6 +111,16 @@ function pickPlaylistUrls(master: string): { video: string; audio: string } {
   return { video, audio: audioUrl }
 }
 
+/** 各 segment の開始時刻 (秒) を、EXTINF の累計として 1 回の走査で求める。 */
+function segmentStarts(segments: { duration: number }[]): number[] {
+  let start = 0
+  return segments.map((s) => {
+    const current = start
+    start += s.duration
+    return current
+  })
+}
+
 /** URL を取得して本文を返す。 */
 async function fetchBuffer(url: string, timeoutMs: number): Promise<Buffer> {
   const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) })
@@ -146,8 +158,9 @@ function runFfmpeg(args: string[]): Promise<void> {
 }
 
 /**
- * 映像・音声の segment k を取得し、`-c copy` で MPEG-TS 1 個に多重化する。`-copyts` で元の
- * タイムスタンプを保つため、segment を連結しても再生時刻が連続する。fMP4 は初期化セグメントを先頭に付ける。
+ * 映像・音声の segment k を取得し、`-c copy` で MPEG-TS 1 個に多重化する。
+ * YouTube の音声 segment は時刻が 0 から始まるため、元の時刻は使わず playlist 上の開始時刻を与える。
+ * fMP4 は初期化セグメントを先頭に付ける。
  */
 async function produceSegment(
   state: VodRelayState,
@@ -172,7 +185,6 @@ async function produceSegment(
       ),
     ])
     await runFfmpeg([
-      '-copyts',
       '-i',
       videoSrc,
       '-i',
@@ -185,14 +197,12 @@ async function produceSegment(
       'copy',
       '-f',
       'mpegts',
-      '-mpegts_copyts',
-      '1',
+      '-output_ts_offset',
+      state.starts[k].toFixed(3),
       '-muxdelay',
       '0',
       '-muxpreload',
       '0',
-      '-avoid_negative_ts',
-      'disabled',
       `${file}.tmp`,
     ])
     await fs.promises.rename(`${file}.tmp`, file)
@@ -376,6 +386,7 @@ export async function ensureVodRelay(
       audio,
       videoInit,
       audioInit,
+      starts: segmentStarts(video.segments),
       done: new Set(),
       inflight: new Map(),
       bytes: 0,
