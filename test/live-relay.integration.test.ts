@@ -43,6 +43,7 @@ test.skipIf(!shouldRun)(
       liveDeliveryMode: 'proxy',
       liveRelayOutDir: outDir,
       liveRelayIdleTtlMs: 5 * 60 * 1000,
+      liveRelayMaxBytes: 10 * 1024 * 1024 * 1024,
       mediaMaxHeight: 1080,
       mediaCacheDir: path.join(outDir, 'cache'),
       mediaCacheMaxBytes: 10 * 1024 * 1024 * 1024,

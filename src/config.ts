@@ -43,6 +43,11 @@ export interface AppConfig {
    * `mediaCacheTtlMs` (既定 6 時間) より大幅に短い既定値 (5 分) にする。
    */
   liveRelayIdleTtlMs: number
+  /**
+   * Live 再公開ディレクトリ (`liveRelayOutDir`) の合計サイズの上限 (bytes)。VOD の再パッケージは全 segment を
+   * 保持するため、新しい再公開を起動する際にこの上限を超えていれば、最終アクセスが最も古いものから停止する。
+   */
+  liveRelayMaxBytes: number
   /** "proxy" モードでダウンロードする動画の最大高さ (px)。YouTube 側のフォーマットから、これ以下で最高画質のものを選ぶ。 */
   mediaMaxHeight: number
   /** "proxy" モードでダウンロード済み動画ファイル・メタデータを保存するディレクトリ。 */
@@ -175,6 +180,9 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     liveRelayIdleTtlMs:
       overrides.liveRelayIdleTtlMs ??
       Number(process.env.LIVE_RELAY_IDLE_TTL_MS ?? 5 * 60 * 1000),
+    liveRelayMaxBytes:
+      overrides.liveRelayMaxBytes ??
+      Number(process.env.LIVE_RELAY_MAX_BYTES ?? 10 * 1024 * 1024 * 1024),
     mediaMaxHeight:
       overrides.mediaMaxHeight ?? Number(process.env.MEDIA_MAX_HEIGHT ?? 1080),
     mediaCacheDir: path.resolve(

@@ -11,6 +11,11 @@ export interface ResolvedVideoInfo {
    * (`extractHlsMasterManifestUrl` 参照)。取得できなければ null。
    */
   hlsMasterManifestUrl: string | null
+  /**
+   * `hlsMasterManifestUrl` が master manifest そのもの (音声込みの単一 variant を選べなかった) 場合 true。
+   * relay モードの VOD 配信では、この master を AVC1 のみに絞って ffmpeg で音声込みの HLS に再パッケージして配信する (`live-relay.ts`)。
+   */
+  hlsIsMaster: boolean
 }
 
 /** `resolveVideoInfo` の解決結果キャッシュエントリ。 */
@@ -45,19 +50,25 @@ interface YtdlpVideoJson {
  * 音声付き variant のみを選択対象にする。除外しないと画質優先の比較で
  * 音声なし variant が選ばれてしまい、relay モードの再生で音声が無くなる。
  *
- * 候補が無ければ、既存の挙動 (最初に見つかった `manifest_url`、AVC1 以外を含む master
- * manifest) にフォールバックする。フォールバック発生時は `videoId` とともに警告ログを
+ * 候補が無ければ、最初に見つかった `manifest_url` (AVC1 以外を含む master manifest) にフォールバックし
+ * `{ url, isMaster: true }` を返す。ただし master に AVC1 の variant が 1 つも無い場合は
+ * `isMaster: false` とし、呼び出し側は従来どおりこの URL へ 302 する (絞り込みの対象が無いため)。
+ * VOD で AVC1 の variant があるのに音声込みでない場合は `isMaster: true` で、呼び出し側が
+ * AVC1 + 音声のみに絞って ffmpeg で再パッケージする (`hls-filter.ts` / `live-relay.ts`)。
+ * 再パッケージされない場合 (AVC1 が無い、または Live) のフォールバック時は `videoId` とともに警告ログを
  * 出力する (既知の再生不具合を踏む可能性があるため運用上検知できるようにする)。
  */
 function extractHlsMasterManifestUrl(
   videoId: string,
-  formats: unknown
-): string | null {
-  if (!Array.isArray(formats)) return null
+  formats: unknown,
+  isLive: boolean
+): { url: string | null; isMaster: boolean } {
+  if (!Array.isArray(formats)) return { url: null, isMaster: false }
 
   let bestAvc1Url: string | null = null
   let bestAvc1Height = -1
   let fallbackManifestUrl: string | null = null
+  let hasAvc1 = false
 
   for (const format of formats) {
     if (typeof format !== 'object' || format === null) continue
@@ -82,6 +93,8 @@ function extractHlsMasterManifestUrl(
       fallbackManifestUrl = manifestUrl
     }
 
+    if (typeof vcodec === 'string' && vcodec.startsWith('avc1')) hasAvc1 = true
+
     if (
       acodec !== 'none' &&
       typeof url === 'string' &&
@@ -95,13 +108,22 @@ function extractHlsMasterManifestUrl(
     }
   }
 
-  if (bestAvc1Url === null && fallbackManifestUrl !== null) {
+  if (
+    bestAvc1Url === null &&
+    fallbackManifestUrl !== null &&
+    (!hasAvc1 || isLive)
+  ) {
     logger.warn(
       `No AVC1 HLS variant found for video ${videoId}; falling back to the raw master manifest URL (may hit the known VRChat/AVPro playback issue)`
     )
   }
 
-  return bestAvc1Url ?? fallbackManifestUrl
+  return bestAvc1Url === null
+    ? {
+        url: fallbackManifestUrl,
+        isMaster: fallbackManifestUrl !== null && hasAvc1,
+      }
+    : { url: bestAvc1Url, isMaster: false }
 }
 
 /**
@@ -123,9 +145,12 @@ export async function resolveVideoInfo(
   }
 
   const raw = (await resolveVideoJson(videoId, options)) as YtdlpVideoJson
+  const isLive = raw.is_live === true
+  const hls = extractHlsMasterManifestUrl(videoId, raw.formats, isLive)
   const info: ResolvedVideoInfo = {
-    isLive: raw.is_live === true,
-    hlsMasterManifestUrl: extractHlsMasterManifestUrl(videoId, raw.formats),
+    isLive,
+    hlsMasterManifestUrl: hls.url,
+    hlsIsMaster: hls.isMaster,
   }
   resolveCache.set(videoId, { info, fetchedAt: Date.now() })
   return info

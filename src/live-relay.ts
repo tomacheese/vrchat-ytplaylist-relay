@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { VIDEO_ID_PATTERN } from './config'
 import type { AppConfig } from './config'
+import { fetchAvc1Master } from './hls-filter'
 import { KeyedMutex } from './lock'
 import { logger } from './logger'
 import { resolveVideoInfo } from './live-resolve'
@@ -12,6 +13,9 @@ export const LIVE_PLAYLIST_FILE_NAME = 'live.m3u8'
 
 /** ffmpeg `-f hls` が書き出す segment ファイル名のパターン (`live0.ts`, `live1.ts`, ...)。 */
 const SEGMENT_FILE_PATTERN = /^live\d+\.ts$/
+
+/** VOD 再パッケージ時の入力読み込み速度の上限 (再生速度の倍率)。 */
+const VOD_READ_RATE = 10
 
 /** ffmpeg プロセスに SIGTERM を送ってから実際の終了を待つ猶予。超過時は SIGKILL へ切り替える。 */
 const STOP_GRACE_MS = 5000
@@ -36,6 +40,8 @@ interface LiveRelayState {
    * 成功した場合は誰も resolve しないまま放置される。
    */
   startupFailure: Promise<Error>
+  /** VOD の再パッケージか。ffmpeg が正常終了 (EOF) しても idle TTL までファイルを残すために使う。 */
+  vod: boolean
   /** ffmpeg プロセスの終了 (`close` イベント) を示す。`stopLiveRelay` が `fs.rm` の前に待ち合わせる。 */
   exited: Promise<void>
 }
@@ -173,6 +179,52 @@ async function evictIdleLiveRelays(idleTtlMs: number): Promise<void> {
   await Promise.all(targets.map((videoId) => stopLiveRelay(videoId)))
 }
 
+/** ディレクトリ直下のファイルの合計サイズ (bytes)。存在しなければ 0。 */
+async function dirSize(dir: string): Promise<number> {
+  const entries = await fs.promises
+    .readdir(dir, { withFileTypes: true })
+    .catch(() => [])
+  let total = 0
+  for (const entry of entries) {
+    if (!entry.isFile()) continue
+    const stat = await fs.promises
+      .stat(path.join(dir, entry.name))
+      .catch(() => null)
+    total += stat?.size ?? 0
+  }
+  return total
+}
+
+/**
+ * 登録済みの Live 再公開ディレクトリの合計サイズが `liveRelayMaxBytes` を超えていれば、最終アクセスが
+ * 最も古いものから停止する。VOD の再パッケージは全 segment を保持するため、新しい再公開を起動する前に呼ぶ。
+ * 起動中 (最初の segment 未書き出し) のものは対象外。これから起動する再公開の分は含まないため上限は目安。
+ */
+async function enforceMaxBytes(config: AppConfig): Promise<void> {
+  const sizes = new Map<string, number>()
+  let total = 0
+  for (const state of relays.values()) {
+    const size = await dirSize(state.outDir)
+    sizes.set(state.videoId, size)
+    total += size
+  }
+  const started: LiveRelayState[] = []
+  for (const state of relays.values()) {
+    if (state.playlistPath !== null) started.push(state)
+  }
+  const oldestFirst = started.toSorted(
+    (a, b) => a.lastAccessedAt - b.lastAccessedAt
+  )
+  for (const state of oldestFirst) {
+    if (total <= config.liveRelayMaxBytes) break
+    total -= sizes.get(state.videoId) ?? 0
+    logger.warn(
+      `live relay total size exceeds ${config.liveRelayMaxBytes} bytes; stopping the least recently used relay for video ${state.videoId}`
+    )
+    await stopLiveRelay(state.videoId)
+  }
+}
+
 /** videoId の Live 再公開ファイルの配信ルートへアクセスがあった際に呼ぶ。 */
 export function touchLiveRelay(videoId: string): void {
   const state = relays.get(videoId)
@@ -180,8 +232,9 @@ export function touchLiveRelay(videoId: string): void {
 }
 
 /**
- * resolveVideoInfo() で得た HLS manifest URL (AVC1 優先、無ければ master manifest URL) を
- * ffmpeg でローカルに再公開する。
+ * HLS 入力を ffmpeg でローカルに再公開する。`input` は Live では resolveVideoInfo() が返した HLS manifest URL、
+ * VOD (`vod`) では AVC1 + 音声のみに絞った master を書き出したローカルファイル (`hls-filter.ts`)。
+ * VOD は全 segment を残す event playlist で、Live は直近の窓のみ残す。
  * `-c copy` により再エンコードなしでコンテナのみ HLS に変換する (Docker 実機検証済みのコマンド)。
  * `temp_file` フラグにより segment/playlist の書き込みを一時ファイル経由の rename にし、
  * `waitForFirstSegment` の `fs.watch` や `res.sendFile()` が書き込み途中のファイルを掴むのを防ぐ
@@ -190,30 +243,55 @@ export function touchLiveRelay(videoId: string): void {
  */
 function startFfmpeg(
   outDir: string,
-  hlsMasterManifestUrl: string
+  input: string,
+  vod: boolean
 ): ChildProcess {
   const playlistPath = path.join(outDir, LIVE_PLAYLIST_FILE_NAME)
-  return spawn(
-    'ffmpeg',
-    [
-      '-loglevel',
-      'warning',
-      '-i',
-      hlsMasterManifestUrl,
-      '-c',
-      'copy',
-      '-f',
-      'hls',
-      '-hls_time',
-      '4',
-      '-hls_list_size',
-      '6',
-      '-hls_flags',
-      'delete_segments+append_list+temp_file',
-      playlistPath,
-    ],
-    { stdio: ['ignore', 'ignore', 'pipe'] }
-  )
+  // VOD: `-readrate` で再生速度の数倍に制限して読む。視聴位置より先の segment を早く用意して Seek できる範囲を
+  // 広げつつ、全編を一気にダウンロードしてディスクを埋めないようにするための上限。
+  // 全 segment を残す event playlist にする (ffmpeg 終了時に ENDLIST)。segment は idle TTL でディレクトリごと削除される。
+  // ponytail: 倍率は固定。短い動画中心なら上げてよい (Seek 可能範囲が早く伸びる代わりに一時保存が増える)。
+  // input はローカルの絞り込み済み master (file) から YouTube の https を読むため protocol_whitelist が要る。
+  const args = vod
+    ? [
+        '-protocol_whitelist',
+        'file,crypto,data,http,https,tcp,tls',
+        '-readrate',
+        String(VOD_READ_RATE),
+        '-i',
+        input,
+        '-c',
+        'copy',
+        '-f',
+        'hls',
+        '-hls_time',
+        '4',
+        '-hls_list_size',
+        '0',
+        '-hls_playlist_type',
+        'event',
+        '-hls_flags',
+        'temp_file',
+        playlistPath,
+      ]
+    : [
+        '-i',
+        input,
+        '-c',
+        'copy',
+        '-f',
+        'hls',
+        '-hls_time',
+        '4',
+        '-hls_list_size',
+        '6',
+        '-hls_flags',
+        'delete_segments+append_list+temp_file',
+        playlistPath,
+      ]
+  return spawn('ffmpeg', ['-loglevel', 'warning', ...args], {
+    stdio: ['ignore', 'ignore', 'pipe'],
+  })
 }
 
 /**
@@ -261,8 +339,34 @@ async function startLiveRelay(
     return { error: 'failed to resolve HLS manifest' }
   }
 
-  await fs.promises.mkdir(outDir, { recursive: true })
-  const ffmpegProcess = startFfmpeg(outDir, info.hlsMasterManifestUrl)
+  // VOD で音声込みの単一 variant が無い場合 (hlsIsMaster) は、AVC1 + 音声のみに絞った master を
+  // ローカルに書き出して ffmpeg に渡す (master をそのまま渡すと VP9 など TS に入らない variant が選ばれ得る)。
+  const vod = info.hlsIsMaster && !info.isLive
+  let input = info.hlsMasterManifestUrl
+  if (vod) {
+    let filtered: string | null
+    try {
+      filtered = await fetchAvc1Master(
+        info.hlsMasterManifestUrl,
+        config.ytdlpTimeoutMs
+      )
+    } catch (err) {
+      logger.error(
+        `live relay for video ${videoId} failed to fetch HLS master: ${(err as Error).message}`
+      )
+      return { error: 'failed to fetch HLS master manifest' }
+    }
+    if (filtered === null) {
+      return { error: `no AVC1 HLS variant found for video ${videoId}` }
+    }
+    await enforceMaxBytes(config)
+    await fs.promises.mkdir(outDir, { recursive: true })
+    input = path.join(outDir, 'input.m3u8')
+    await fs.promises.writeFile(input, filtered)
+  } else {
+    await fs.promises.mkdir(outDir, { recursive: true })
+  }
+  const ffmpegProcess = startFfmpeg(outDir, input, vod)
 
   const { promise: startupFailure, resolve: signalStartupFailure } =
     Promise.withResolvers<Error>()
@@ -278,6 +382,7 @@ async function startLiveRelay(
     startedAt: now,
     lastAccessedAt: now,
     startupFailure,
+    vod,
     exited,
   }
   relays.set(videoId, state)
@@ -318,6 +423,14 @@ async function startLiveRelay(
     // stopLiveRelay() 起因の close はここに到達する前に Map から既に削除されているため、
     // このブロックに到達する non-zero code は常に stopLiveRelay() 以外が原因の異常終了である。
     if (relays.get(videoId) !== state) return
+    // VOD の再パッケージは -readrate により再生時間より早く EOF に達して正常終了する。視聴者はまだ
+    // 途中を再生・Seek しているため、state とファイルは残し、idle TTL の eviction (`stopLiveRelay`) に任せる。
+    if (code === 0 && state.vod) {
+      logger.info(
+        `live relay for video ${videoId} finished remuxing; keeping files until idle TTL`
+      )
+      return
+    }
     relays.delete(videoId)
     if (code === 0) {
       logger.info(

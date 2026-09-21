@@ -10,6 +10,7 @@ vi.mock('../src/live-resolve', () => ({
   resolveVideoInfo: vi.fn((videoId: string) =>
     Promise.resolve({
       isLive: true,
+      hlsIsMaster: false,
       hlsMasterManifestUrl: `https://manifest.googlevideo.com/${videoId}/master.m3u8`,
     })
   ),
@@ -70,6 +71,7 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     liveDeliveryMode: 'proxy',
     liveRelayOutDir: outDirRoot ?? '',
     liveRelayIdleTtlMs: 5 * 60 * 1000,
+    liveRelayMaxBytes: 10 * 1024 * 1024 * 1024,
     mediaMaxHeight: 1080,
     mediaCacheDir: '',
     mediaCacheMaxBytes: 10 * 1024 * 1024 * 1024,
@@ -89,6 +91,7 @@ beforeEach(() => {
 })
 
 afterEach(async () => {
+  vi.unstubAllGlobals()
   const { stopLiveRelay } = await import('../src/live-relay')
   await stopLiveRelay('testVideo01')
   await stopLiveRelay('testVideo02')
@@ -330,4 +333,117 @@ test('ensureLiveRelay rejects a malformed videoId instead of building a path out
   const config = makeConfig()
   const result = await ensureLiveRelay(config, '..')
   assert.ok('error' in result)
+})
+
+test('ensureLiveRelay remuxes a VOD master: feeds ffmpeg an AVC1-only local master with a capped read rate and keeps all segments', async () => {
+  const { resolveVideoInfo } = await import('../src/live-resolve')
+  vi.mocked(resolveVideoInfo).mockResolvedValueOnce({
+    isLive: false,
+    hlsIsMaster: true,
+    hlsMasterManifestUrl: 'https://manifest.googlevideo.com/vod/master.m3u8',
+  })
+  const master = [
+    '#EXTM3U',
+    '#EXT-X-MEDIA:URI="https://a/234",TYPE=AUDIO,GROUP-ID="234",NAME="d"',
+    '#EXT-X-STREAM-INF:BANDWIDTH=1,CODECS="avc1.640028,mp4a.40.2",RESOLUTION=1920x1080,AUDIO="234"',
+    'https://v/1080',
+    '#EXT-X-STREAM-INF:BANDWIDTH=1,CODECS="vp09.00.21.08,mp4a.40.2",RESOLUTION=3840x2160,AUDIO="234"',
+    'https://v/vp9',
+    '',
+  ].join('\n')
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(() => Promise.resolve(new Response(master)))
+  )
+
+  const { ensureLiveRelay } = await import('../src/live-relay')
+  const result = await ensureLiveRelay(makeConfig(), 'testVideo01')
+
+  assert.ok('outDir' in result)
+  const args = spawnMock.mock.calls[0][1]
+  assert.equal(args[args.indexOf('-readrate') + 1], '10')
+  assert.equal(args[args.indexOf('-hls_playlist_type') + 1], 'event')
+  assert.ok(!args.join(' ').includes('delete_segments'))
+  const input = args[args.indexOf('-i') + 1]
+  assert.equal(path.basename(input), 'input.m3u8')
+  const written = fs.readFileSync(input, 'utf8')
+  assert.ok(written.includes('https://v/1080'))
+  assert.ok(!written.includes('https://v/vp9'))
+})
+
+test('a VOD relay whose ffmpeg exits normally (EOF) keeps its files and state until idle eviction', async () => {
+  const { resolveVideoInfo } = await import('../src/live-resolve')
+  vi.mocked(resolveVideoInfo).mockResolvedValue({
+    isLive: false,
+    hlsIsMaster: true,
+    hlsMasterManifestUrl: 'https://manifest.googlevideo.com/vod/master.m3u8',
+  })
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(() =>
+      Promise.resolve(
+        new Response(
+          [
+            '#EXTM3U',
+            '#EXT-X-STREAM-INF:BANDWIDTH=1,CODECS="avc1.640028,mp4a.40.2",RESOLUTION=1920x1080',
+            'https://v/1080',
+            '',
+          ].join('\n')
+        )
+      )
+    )
+  )
+  const { ensureLiveRelay } = await import('../src/live-relay')
+  const config = makeConfig()
+  const result = await ensureLiveRelay(config, 'testVideo01')
+  assert.ok('outDir' in result)
+
+  const child = spawnMock.mock.results[0].value as EventEmitter
+  child.emit('close', 0)
+  await new Promise((resolve) => setTimeout(resolve, 20))
+
+  assert.ok(fs.existsSync(path.join(result.outDir, 'live0.ts')))
+  await ensureLiveRelay(config, 'testVideo01')
+  assert.equal(spawnMock.mock.calls.length, 1)
+  vi.mocked(resolveVideoInfo).mockReset()
+})
+
+test('starting a VOD relay stops the least recently used relay when the total size exceeds liveRelayMaxBytes', async () => {
+  const { resolveVideoInfo } = await import('../src/live-resolve')
+  vi.mocked(resolveVideoInfo).mockImplementation((videoId: string) =>
+    Promise.resolve({
+      isLive: false,
+      hlsIsMaster: true,
+      hlsMasterManifestUrl: `https://manifest.googlevideo.com/${videoId}/master.m3u8`,
+    })
+  )
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(() =>
+      Promise.resolve(
+        new Response(
+          [
+            '#EXTM3U',
+            '#EXT-X-STREAM-INF:BANDWIDTH=1,CODECS="avc1.640028,mp4a.40.2",RESOLUTION=1920x1080',
+            'https://v/1080',
+            '',
+          ].join('\n')
+        )
+      )
+    )
+  )
+  const { ensureLiveRelay } = await import('../src/live-relay')
+  const config = makeConfig({ liveRelayMaxBytes: 1 })
+
+  const first = await ensureLiveRelay(config, 'testVideo01')
+  assert.ok('outDir' in first)
+  assert.ok(fs.existsSync(first.outDir))
+
+  const second = await ensureLiveRelay(config, 'testVideo02')
+  assert.ok('outDir' in second)
+
+  // 1 つ目 (最終アクセスが古い方) が停止され、ディレクトリごと削除されている。
+  assert.ok(!fs.existsSync(first.outDir))
+  assert.ok(fs.existsSync(second.outDir))
+  vi.mocked(resolveVideoInfo).mockReset()
 })

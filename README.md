@@ -39,14 +39,14 @@ Live (配信中) かで別々の環境変数から選ばれる。VOD は `MEDIA_
 | 値 | 挙動 | VOD | Live | 追加要件 |
 |---|---|---|---|---|
 | `redirect` (既定) | `https://www.youtube.com/watch?v=<videoId>` へ 302 Redirect | ✅ | ✅ | なし |
-| `relay` | Backend 自身の yt-dlp が解決した HLS manifest URL へ 302 Redirect (AVC1 の legacy TS variant を優先選択し、無ければ master manifest URL) | ✅ | ✅ | なし |
+| `relay` | Backend 自身の yt-dlp が解決した HLS manifest URL へ 302 Redirect (音声込みの AVC1 variant を優先選択)。VOD で音声込みの単一 variant が無い場合は、ffmpeg で AVC1 + 音声の muxed HLS に再パッケージして配信 (再エンコードなし、視聴分のみ一時保存) | ✅ | ✅ | 単一 variant があればなし。無い VOD は ffmpeg、ディスク容量 |
 | `proxy` | VOD: yt-dlp + ffmpeg でダウンロード・キャッシュしバイト列を直接配信。Live: ffmpeg で HLS をローカル再公開し配信 | ✅ | ✅ | ffmpeg、ディスク容量 |
-| `hybrid` | キャッシュ済みなら `proxy` と同様に配信、未キャッシュなら裏でダウンロードを開始しつつ即座に `relay` 相当で 302 する (解決失敗時のみ `redirect`) | ✅ | ❌ (起動時エラー) | ffmpeg、ディスク容量 |
+| `hybrid` | キャッシュ済みなら `proxy` と同様に配信、未キャッシュなら裏でダウンロードを開始しつつ `relay` 相当の応答を返す (解決失敗、および VOD の再パッケージ失敗時は `redirect`) | ✅ | ❌ (起動時エラー) | ffmpeg、ディスク容量 |
 
 `redirect` は VRChat 同梱の制限付き yt-dlp (`Tools/yt-dlp.exe`) が googlevideo.com への
 直リンク解決に失敗し 403 になることがある既知の問題を抱える。`relay` は Backend 自身の
 (最新版) yt-dlp が解決した HLS master manifest URL へ Redirect するためこの問題を回避でき、
-ffmpeg やディスクキャッシュも不要 (ステートレス)。`proxy` は動画データそのものを Backend
+音声込みの単一 variant が取れる場合は ffmpeg やディスクキャッシュも不要 (ステートレス)。YouTube の VOD は音声が別 rendition の master で返ることが多く、AVPro (Windows Media Foundation) は別 rendition の音声を再生できず無音になるため、その場合は Live `proxy` と同じ ffmpeg 再公開 (`-c copy`、`-readrate 10` で再生速度の 10 倍までに制限して先読みし (Seek 可能範囲を早く広げつつ、全編を一気に保存しない)、`LIVE_RELAY_OUT_DIR` に一時保存し、`LIVE_RELAY_IDLE_TTL_MS` でディレクトリごと削除) で muxed HLS にして配信する。`proxy` は動画データそのものを Backend
 経由で配信することで同じ問題を回避できるが、VOD ではダウンロード完了まで応答をブロックする
 ため Client 側の Timeout に間に合わないことがあり、Live では ffmpeg による HLS 再公開
 (後述) を常駐させる。`hybrid` (VOD 専用) は未キャッシュ時に即座に `relay` 相当の 302 応答を
@@ -61,6 +61,7 @@ VOD の `proxy` / `hybrid` はいずれも、キャッシュが `MEDIA_CACHE_TTL
 VOD `proxy` / `hybrid` 関連の設定 (`.env.example` 参照): `MEDIA_MAX_HEIGHT` / `MEDIA_CACHE_DIR` /
 `MEDIA_CACHE_MAX_BYTES` / `MEDIA_CACHE_TTL_MS` / `MEDIA_DOWNLOAD_TIMEOUT_MS`。
 Live `proxy` 関連の設定: `LIVE_RELAY_OUT_DIR` (再公開先ディレクトリ) /
+`LIVE_RELAY_MAX_BYTES` (再公開ディレクトリの合計サイズの上限、既定 10 GiB。VOD の再パッケージは全 segment を保持するため、新規起動時に超過していれば最終アクセスが最も古いものから停止する) /
 `LIVE_RELAY_IDLE_TTL_MS` (最終アクセスからの ffmpeg 停止猶予、既定 5 分。視聴者がいなくなった
 Live 配信の ffmpeg プロセスを早めに止めるため、VOD の `MEDIA_CACHE_TTL_MS` より大幅に短い)。
 Live `proxy` では videoId ごとに ffmpeg プロセスが 1 つ常駐し、複数視聴者は同じ再公開ファイル
