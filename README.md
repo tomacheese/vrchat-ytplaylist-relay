@@ -61,7 +61,7 @@ VOD の `proxy` / `hybrid` はいずれも、キャッシュが `MEDIA_CACHE_TTL
 VOD `proxy` / `hybrid` 関連の設定 (`.env.example` 参照): `MEDIA_MAX_HEIGHT` / `MEDIA_CACHE_DIR` /
 `MEDIA_CACHE_MAX_BYTES` / `MEDIA_CACHE_TTL_MS` / `MEDIA_DOWNLOAD_TIMEOUT_MS`。
 Live `proxy` 関連の設定: `LIVE_RELAY_OUT_DIR` (再公開先ディレクトリ) /
-`LIVE_RELAY_MAX_BYTES` (再公開ディレクトリの合計サイズの上限、既定 10 GiB。VOD の再パッケージは全 segment を保持するため、新規起動時と、約 15 秒間隔の周期スイープで評価し、超過していれば最終アクセスが最も古いものから停止する。単一動画だけで上限を超える場合はその再生も停止する。周期スイープは idle TTL を過ぎた再公開の削除も行い、起動時には前回プロセスが残したディレクトリを削除する) /
+`LIVE_RELAY_MAX_BYTES` (再公開ディレクトリの合計サイズの上限、既定 10 GiB。VOD の再パッケージは全 segment を保持するため、新規起動時と、約 15 秒間隔の周期スイープで評価し、超過していれば最終アクセスが最も古いものから停止する。単一動画だけで上限を超える場合はその再生も停止する。周期スイープは idle TTL を過ぎた再公開の削除も行い、起動時には前回プロセスが残したディレクトリを削除する。削除対象は名前が videoId 形式で、中身が再公開の生成ファイルだけのディレクトリに限られ、`LIVE_RELAY_OUT_DIR` 内のそれ以外のエントリには触れない) /
 `LIVE_RELAY_IDLE_TTL_MS` (最終アクセスからの ffmpeg 停止猶予、既定 5 分。視聴者がいなくなった
 Live 配信の ffmpeg プロセスを早めに止めるため、VOD の `MEDIA_CACHE_TTL_MS` より大幅に短い)。
 Live `proxy` では videoId ごとに ffmpeg プロセスが 1 つ常駐し、複数視聴者は同じ再公開ファイル

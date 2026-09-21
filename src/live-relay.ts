@@ -182,26 +182,46 @@ async function evictIdleLiveRelays(idleTtlMs: number): Promise<void> {
 /** プロセス起動時に 1 回だけ実行する、前回プロセスが残した再公開ディレクトリの削除。 */
 let orphanCleanup: Promise<void> | null = null
 
+/** 再公開が生成するファイル名 (playlist / VOD 用の入力 master / segment と、それぞれの `temp_file` 一時ファイル)。 */
+const RELAY_FILE_PATTERN = /^(?:live\.m3u8|input\.m3u8|live\d+\.ts)(?:\.tmp)?$/
+
+/** ディレクトリが、再公開が生成したファイルだけで構成されているか。読めない場合は false。 */
+async function isRelayGeneratedDir(dir: string): Promise<boolean> {
+  const entries = await fs.promises
+    .readdir(dir, { withFileTypes: true })
+    .catch(() => null)
+  return (
+    entries?.every(
+      (entry) => entry.isFile() && RELAY_FILE_PATTERN.test(entry.name)
+    ) ?? false
+  )
+}
+
 /**
- * `liveRelayOutDir` 直下の残存ディレクトリを削除する。再起動前の ffmpeg が残した segment (VOD は全編分) は
- * どの `relays` からも参照されず、idle eviction の対象にもならないため、最初の呼び出しで一掃する。
+ * `liveRelayOutDir` 直下の、前回プロセスが残した再公開ディレクトリを削除する。再起動前の ffmpeg が残した
+ * segment (VOD は全編分) はどの `relays` からも参照されず、idle eviction の対象にもならないため、最初の
+ * 呼び出しで一掃する。`LIVE_RELAY_OUT_DIR` は任意のパスを指定でき専用ディレクトリとは限らない (`./data` など
+ * 既存データを含む場所を誤って指定していても消さない) ため、名前が videoId の形式 (`VIDEO_ID_PATTERN`) で、
+ * 中身が再公開の生成ファイルだけのディレクトリに限って削除する。それ以外のエントリは削除しない。
  * 全呼び出し元が同じ Promise を待つので、この削除が終わる前に新しい再公開が起動して巻き込まれることはない。
  */
 function cleanupOrphanDirs(config: AppConfig): Promise<void> {
   orphanCleanup ??= (async () => {
     const entries = await fs.promises
-      .readdir(config.liveRelayOutDir)
+      .readdir(config.liveRelayOutDir, { withFileTypes: true })
       .catch(() => [])
-    await Promise.all(
-      entries
-        .filter((name) => !relays.has(name))
-        .map((name) =>
-          fs.promises.rm(path.join(config.liveRelayOutDir, name), {
-            recursive: true,
-            force: true,
-          })
-        )
-    )
+    for (const entry of entries) {
+      if (
+        !entry.isDirectory() ||
+        !VIDEO_ID_PATTERN.test(entry.name) ||
+        relays.has(entry.name)
+      )
+        continue
+      const dir = path.join(config.liveRelayOutDir, entry.name)
+      if (await isRelayGeneratedDir(dir)) {
+        await fs.promises.rm(dir, { recursive: true, force: true })
+      }
+    }
   })()
   return orphanCleanup
 }

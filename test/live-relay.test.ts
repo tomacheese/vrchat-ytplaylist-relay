@@ -467,16 +467,32 @@ test('the periodic sweep stops an idle relay even when no further request arrive
   assert.ok(!fs.existsSync(result.outDir))
 })
 
-test('the first ensureLiveRelay removes directories left by a previous process', async () => {
+test('the first ensureLiveRelay removes only relay-generated leftovers and never touches unrelated entries', async () => {
   const { ensureLiveRelay } = await import('../src/live-relay')
   const config = makeConfig()
-  const stale = path.join(config.liveRelayOutDir, 'staleVideo1')
+  const root = config.liveRelayOutDir
+
+  // 前回プロセスが残した再公開ディレクトリ (削除される)
+  const stale = path.join(root, 'staleVideo1')
   fs.mkdirSync(stale, { recursive: true })
   fs.writeFileSync(path.join(stale, 'live0.ts'), 'old segment')
+  fs.writeFileSync(path.join(stale, 'live.m3u8'), '#EXTM3U')
+
+  // LIVE_RELAY_OUT_DIR の誤指定を想定した無関係なエントリ (削除されない)
+  fs.writeFileSync(path.join(root, 'state.json'), '{}')
+  fs.mkdirSync(path.join(root, 'cache'), { recursive: true })
+  fs.writeFileSync(path.join(root, 'cache', 'video.mp4'), 'cached')
+  // videoId 形式の名前でも、再公開の生成ファイル以外を含むディレクトリは削除されない
+  const lookalike = path.join(root, 'lookAlike11')
+  fs.mkdirSync(lookalike, { recursive: true })
+  fs.writeFileSync(path.join(lookalike, 'user-data.db'), 'important')
 
   const result = await ensureLiveRelay(config, 'testVideo01')
 
   assert.ok('outDir' in result)
   assert.ok(!fs.existsSync(stale))
+  assert.ok(fs.existsSync(path.join(root, 'state.json')))
+  assert.ok(fs.existsSync(path.join(root, 'cache', 'video.mp4')))
+  assert.ok(fs.existsSync(path.join(lookalike, 'user-data.db')))
   assert.ok(fs.existsSync(result.outDir))
 })
