@@ -374,3 +374,92 @@ test('resolveVideoInfo propagates failures and does not cache them (retries yt-d
 
   assert.equal(readAttemptCount(countPath), 2)
 })
+
+const MASTER_URL = 'https://manifest.googlevideo.com/master.m3u8'
+
+test('resolveVideoInfo flags hlsIsMaster for VOD AVC1 variants that carry no audio (separate audio rendition)', async () => {
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yrp-live-resolve-test-'))
+  const { scriptPath } = makeFakeYtdlp(tmpDir, {
+    json: {
+      is_live: false,
+      formats: [
+        {
+          protocol: 'm3u8_native',
+          manifest_url: MASTER_URL,
+          vcodec: 'avc1.640028',
+          acodec: 'none',
+          height: 1080,
+          url: 'https://manifest.googlevideo.com/1080.m3u8',
+        },
+      ],
+    },
+  })
+
+  const info = await resolveVideoInfo('v1', {
+    ytdlpPath: scriptPath,
+    timeoutMs: 5000,
+    cacheTtlMs: 60_000,
+  })
+
+  assert.equal(info.hlsMasterManifestUrl, MASTER_URL)
+  assert.equal(info.hlsIsMaster, true)
+})
+
+test('resolveVideoInfo does not flag hlsIsMaster when the master has no AVC1 variant (raw master is redirected as before)', async () => {
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yrp-live-resolve-test-'))
+  const { scriptPath } = makeFakeYtdlp(tmpDir, {
+    json: {
+      is_live: false,
+      formats: [
+        {
+          protocol: 'm3u8_native',
+          manifest_url: MASTER_URL,
+          vcodec: 'vp09.00.21.08',
+          acodec: 'none',
+          height: 360,
+          url: 'https://manifest.googlevideo.com/vp9.m3u8',
+        },
+      ],
+    },
+  })
+
+  const info = await resolveVideoInfo('v1', {
+    ytdlpPath: scriptPath,
+    timeoutMs: 5000,
+    cacheTtlMs: 60_000,
+  })
+
+  assert.equal(info.hlsMasterManifestUrl, MASTER_URL)
+  assert.equal(info.hlsIsMaster, false)
+})
+
+test('resolveVideoInfo does not flag hlsIsMaster when a muxed AVC1 variant is selected', async () => {
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yrp-live-resolve-test-'))
+  const { scriptPath } = makeFakeYtdlp(tmpDir, {
+    json: {
+      is_live: false,
+      formats: [
+        {
+          protocol: 'm3u8_native',
+          manifest_url: MASTER_URL,
+          vcodec: 'avc1.640028',
+          acodec: 'mp4a.40.2',
+          height: 1080,
+          url: 'https://manifest.googlevideo.com/1080.m3u8',
+        },
+      ],
+    },
+  })
+
+  const info = await resolveVideoInfo('v1', {
+    ytdlpPath: scriptPath,
+    timeoutMs: 5000,
+    cacheTtlMs: 60_000,
+  })
+
+  assert.equal(
+    info.hlsMasterManifestUrl,
+    'https://manifest.googlevideo.com/1080.m3u8'
+  )
+  assert.equal(info.hlsIsMaster, false)
+})

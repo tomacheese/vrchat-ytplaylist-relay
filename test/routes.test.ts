@@ -30,6 +30,7 @@ beforeEach(() => {
   vi.mocked(resolveVideoInfo).mockResolvedValue({
     isLive: false,
     hlsMasterManifestUrl: null,
+    hlsIsMaster: false,
   })
   vi.mocked(ensureLiveRelay).mockResolvedValue({
     error: 'ensureLiveRelay is not configured for this test',
@@ -60,6 +61,7 @@ const config: AppConfig = {
   liveDeliveryMode: 'redirect',
   liveRelayOutDir: '',
   liveRelayIdleTtlMs: 5 * 60 * 1000,
+  liveRelayMaxBytes: 10 * 1024 * 1024 * 1024,
   mediaMaxHeight: 1080,
   mediaCacheDir: '',
   mediaCacheMaxBytes: 10 * 1024 * 1024 * 1024,
@@ -237,6 +239,7 @@ test('GET /video/:videoId.mp4 in relay mode redirects to the resolved HLS master
   vi.mocked(resolveVideoInfo).mockResolvedValue({
     isLive: false,
     hlsMasterManifestUrl: 'https://manifest.googlevideo.com/v1/master.m3u8',
+    hlsIsMaster: false,
   })
 
   const app = createApp(relayConfig)
@@ -256,6 +259,58 @@ test('GET /video/:videoId.mp4 in relay mode redirects to the resolved HLS master
     assert.equal(
       res.headers.get('location'),
       'https://manifest.googlevideo.com/v1/master.m3u8'
+    )
+  } finally {
+    if (relayServer) {
+      const s = relayServer
+      await new Promise<void>((resolve, reject) => {
+        s.close((err) => {
+          if (err) reject(err)
+          else resolve()
+        })
+      })
+    }
+    fs.rmSync(relayDataDir, { recursive: true, force: true })
+  }
+})
+
+test('GET /video/:videoId.mp4 in relay mode remuxes a VOD master via the live relay instead of redirecting to it', async () => {
+  const relayDataDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'yrp-route-test-video-relay-master-')
+  )
+  const relayConfig: AppConfig = {
+    ...config,
+    dataDir: relayDataDir,
+    mediaDeliveryMode: 'relay',
+    liveDeliveryMode: 'relay',
+  }
+  vi.mocked(resolveVideoInfo).mockResolvedValue({
+    isLive: false,
+    hlsMasterManifestUrl: 'https://manifest.googlevideo.com/v1/master.m3u8',
+    hlsIsMaster: true,
+  })
+  vi.mocked(ensureLiveRelay).mockResolvedValue({
+    outDir: relayDataDir,
+    playlistFileName: 'live.m3u8',
+  })
+
+  const app = createApp(relayConfig)
+  let relayServer: Server | undefined
+  try {
+    relayServer = await new Promise<Server>((resolve) => {
+      const s = app.listen(0, '127.0.0.1', () => {
+        resolve(s)
+      })
+    })
+    const address = relayServer.address() as AddressInfo
+    const res = await fetch(
+      `http://127.0.0.1:${address.port}/video/${DIRECT_VIDEO_ID}.mp4`,
+      { redirect: 'manual' }
+    )
+    assert.equal(res.status, 302)
+    assert.equal(
+      res.headers.get('location'),
+      `/live/${DIRECT_VIDEO_ID}/live.m3u8`
     )
   } finally {
     if (relayServer) {
@@ -339,6 +394,7 @@ test('GET /video/:videoId.mp4 with a live video in proxy mode redirects to GET /
   vi.mocked(resolveVideoInfo).mockResolvedValue({
     isLive: true,
     hlsMasterManifestUrl: 'https://manifest.googlevideo.com/v1/master.m3u8',
+    hlsIsMaster: false,
   })
   vi.mocked(ensureLiveRelay).mockResolvedValue({
     outDir: '/unused',
@@ -390,6 +446,7 @@ test('GET /:playlistId/:position.mp4 in relay mode redirects to the resolved HLS
   vi.mocked(resolveVideoInfo).mockResolvedValue({
     isLive: false,
     hlsMasterManifestUrl: 'https://manifest.googlevideo.com/v1/master.m3u8',
+    hlsIsMaster: false,
   })
   const { state, manifest } = buildManifest(
     null,
@@ -445,6 +502,7 @@ test('GET /:playlistId/:position.mp4 in relay mode returns 502 when the HLS mani
   vi.mocked(resolveVideoInfo).mockResolvedValue({
     isLive: false,
     hlsMasterManifestUrl: null,
+    hlsIsMaster: false,
   })
   const { state, manifest } = buildManifest(
     null,
@@ -495,6 +553,7 @@ test('GET /:playlistId/:position.mp4 in hybrid mode falls back to a relay redire
   vi.mocked(resolveVideoInfo).mockResolvedValue({
     isLive: false,
     hlsMasterManifestUrl: 'https://manifest.googlevideo.com/v1/master.m3u8',
+    hlsIsMaster: false,
   })
   const { state, manifest } = buildManifest(
     null,
@@ -537,6 +596,65 @@ test('GET /:playlistId/:position.mp4 in hybrid mode falls back to a relay redire
   }
 })
 
+test('GET /:playlistId/:position.mp4 in hybrid mode falls back to youtube.com when the VOD remux throws', async () => {
+  const hybridDataDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'yrp-route-test-hybrid-remux-throw-')
+  )
+  const hybridConfig: AppConfig = {
+    ...config,
+    dataDir: hybridDataDir,
+    mediaCacheDir: path.join(hybridDataDir, 'cache'),
+    mediaDeliveryMode: 'hybrid',
+    ytdlpPath: 'yt-dlp-does-not-exist',
+  }
+  vi.mocked(resolveVideoInfo).mockResolvedValue({
+    isLive: false,
+    hlsMasterManifestUrl: 'https://manifest.googlevideo.com/v1/master.m3u8',
+    hlsIsMaster: true,
+  })
+  // ENOSPC などで ensureLiveRelay が reject しても、hybrid は 502 ではなく redirect にフォールバックする。
+  vi.mocked(ensureLiveRelay).mockRejectedValue(new Error('ENOSPC'))
+  const { state, manifest } = buildManifest(
+    null,
+    'pl1',
+    100,
+    [{ id: 'v1', title: 'Track 1', duration: 100 }],
+    Date.now()
+  )
+  persistSlotState(hybridDataDir, state)
+  primeManifestCacheForTests('pl1', manifest)
+
+  const app = createApp(hybridConfig)
+  let hybridServer: Server | undefined
+  try {
+    hybridServer = await new Promise<Server>((resolve) => {
+      const s = app.listen(0, '127.0.0.1', () => {
+        resolve(s)
+      })
+    })
+    const address = hybridServer.address() as AddressInfo
+    const res = await fetch(`http://127.0.0.1:${address.port}/pl1/0.mp4`, {
+      redirect: 'manual',
+    })
+    assert.equal(res.status, 302)
+    assert.equal(
+      res.headers.get('location'),
+      'https://www.youtube.com/watch?v=v1'
+    )
+  } finally {
+    if (hybridServer) {
+      const s = hybridServer
+      await new Promise<void>((resolve, reject) => {
+        s.close((err) => {
+          if (err) reject(err)
+          else resolve()
+        })
+      })
+    }
+    fs.rmSync(hybridDataDir, { recursive: true, force: true })
+  }
+})
+
 test('GET /:playlistId/:position.mp4 with a live video in proxy mode redirects to the live-relay route', async () => {
   const liveProxyDataDir = fs.mkdtempSync(
     path.join(os.tmpdir(), 'yrp-route-test-live-proxy-')
@@ -550,6 +668,7 @@ test('GET /:playlistId/:position.mp4 with a live video in proxy mode redirects t
   vi.mocked(resolveVideoInfo).mockResolvedValue({
     isLive: true,
     hlsMasterManifestUrl: 'https://manifest.googlevideo.com/v1/master.m3u8',
+    hlsIsMaster: false,
   })
   vi.mocked(ensureLiveRelay).mockResolvedValue({
     outDir: '/unused',
@@ -607,6 +726,7 @@ test('GET /:playlistId/:position.mp4 calls resolveVideoInfo even when mediaDeliv
   vi.mocked(resolveVideoInfo).mockResolvedValue({
     isLive: true,
     hlsMasterManifestUrl: 'https://manifest.googlevideo.com/v1/master.m3u8',
+    hlsIsMaster: false,
   })
   vi.mocked(ensureLiveRelay).mockResolvedValue({
     outDir: '/unused',
@@ -669,6 +789,7 @@ test('GET /:playlistId/:position.mp4 with a live video hits the "redirect" branc
   vi.mocked(resolveVideoInfo).mockResolvedValue({
     isLive: true,
     hlsMasterManifestUrl: 'https://manifest.googlevideo.com/v1/master.m3u8',
+    hlsIsMaster: false,
   })
   const { state, manifest } = buildManifest(
     null,
@@ -727,6 +848,7 @@ test('GET /:playlistId/:position.mp4 with a live video hits the "relay" branch o
   vi.mocked(resolveVideoInfo).mockResolvedValue({
     isLive: true,
     hlsMasterManifestUrl: 'https://manifest.googlevideo.com/v1/master.m3u8',
+    hlsIsMaster: false,
   })
   const { state, manifest } = buildManifest(
     null,

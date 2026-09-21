@@ -75,17 +75,24 @@ function serveVodProxy(
 /**
  * Live "proxy" 配信ロジック: ensureLiveRelay() で再公開を起動し、`liveProxyTarget` が組み立てる
  * Live 再公開ファイルの配信ルートへ 302 する。`buildRedirectPath` が `null` を返した場合
- * (呼び出し元の playlistId 再検証失敗など) は 404 を返す。
+ * (呼び出し元の playlistId 再検証失敗など) は 404 を返す。再公開の起動に失敗した場合は 502 を返すが、
+ * `onFailure` が渡されていれば代わりにそれを呼ぶ (hybrid が redirect にフォールバックするため)。
  */
 function serveLiveProxy(
   config: AppConfig,
   videoId: string,
   liveProxyTarget: LiveProxyTarget,
-  res: Response
+  res: Response,
+  onFailure?: () => void
 ): void {
   ensureLiveRelay(config, videoId)
     .then((result) => {
       if ('error' in result) {
+        if (onFailure) {
+          logger.warn(`live relay for video ${videoId} failed: ${result.error}`)
+          onFailure()
+          return
+        }
         res.status(502).json({ error: result.error })
         return
       }
@@ -99,6 +106,13 @@ function serveLiveProxy(
       res.redirect(302, redirectPath)
     })
     .catch((err: unknown) => {
+      if (onFailure) {
+        logger.warn(
+          `live relay for video ${videoId} failed: ${(err as Error).message}`
+        )
+        onFailure()
+        return
+      }
       res.status(502).json({
         error: `failed to start live relay: ${(err as Error).message}`,
       })
@@ -108,10 +122,27 @@ function serveLiveProxy(
     })
 }
 
-/** "relay" 配信ロジック: 解決済みの HLS manifest URL (AVC1 優先) へ 302 する。解決に失敗していれば 502。 */
-function serveRelay(info: ResolvedVideoInfo, res: Response): void {
+/**
+ * "relay" 配信ロジック。解決に失敗していれば 502。
+ * 音声込みの AVC1 variant (単一 URL) が選べていればその URL へ 302 する。
+ * 選べなかった VOD (YouTube の VOD は音声が別 rendition で、AVC1 variant が映像のみ) は、
+ * AVPro が別 rendition の音声を再生できず無音になるため、ffmpeg で音声込みの HLS に
+ * 再パッケージして配信する (Live "proxy" と同じ再公開経路。`live-relay.ts` 参照)。
+ */
+function serveRelay(
+  config: AppConfig,
+  videoId: string,
+  liveProxyTarget: LiveProxyTarget,
+  info: ResolvedVideoInfo,
+  res: Response,
+  onRemuxFailure?: () => void
+): void {
   if (!info.hlsMasterManifestUrl) {
     res.status(502).json({ error: 'failed to resolve HLS manifest' })
+    return
+  }
+  if (info.hlsIsMaster && !info.isLive) {
+    serveLiveProxy(config, videoId, liveProxyTarget, res, onRemuxFailure)
     return
   }
   res.redirect(302, info.hlsMasterManifestUrl)
@@ -126,9 +157,10 @@ function serveRelay(info: ResolvedVideoInfo, res: Response): void {
  * - "redirect": 動画バイト列を配信せず、解決した YouTube 動画へ 302 Redirect するだけ。
  *   VRChat の AVProVideoPlayer は youtube.com の URL をネイティブに解釈できるが、VRChat 同梱の
  *   制限付き yt-dlp が googlevideo.com 直リンクの解決に失敗し再生できないことがある。
- * - "relay": yt-dlp が解決した HLS manifest URL (AVC1 の単一 variant を優先し、無ければ
- *   YouTube 生の master manifest URL) へ 302 Redirect する。ffmpeg・ディスクキャッシュを
- *   使わないステートレスな配信方式 (VOD/Live 共通)。
+ * - "relay": yt-dlp が解決した HLS manifest URL (音声込みの AVC1 単一 variant) へ 302 Redirect する。
+ *   単一 variant が無い場合、Live は YouTube 生の master manifest URL へ 302 Redirect する。
+ *   VOD は音声が別 rendition で AVPro が無音になるため、ffmpeg で音声込みの HLS に再パッケージして配信する
+ *   (Live "proxy" と同じ再公開経路。単一 variant がある場合はステートレスな 302 のみ)。
  * - "proxy" (VOD): Backend 自身が yt-dlp で動画をダウンロード・キャッシュし (media-cache.ts)、
  *   バイト列を直接配信する。ダウンロード完了まで応答をブロックするため、Client 側の Timeout に
  *   間に合わないことがある。
@@ -145,7 +177,8 @@ function serveRelay(info: ResolvedVideoInfo, res: Response): void {
  * この間はブロックや Redirect フォールバックを発生させない。
  * 再ダウンロードが完了すると次回以降のリクエストから新しいファイルに切り替わる。
  *
- * @param liveProxyTarget Live "proxy" モード時の再公開ファイル配信ルートへの Redirect URL 組み立て方法。
+ * @param liveProxyTarget 再公開ファイル (Live "proxy"、および音声が別 rendition の VOD の "relay"/"hybrid") の
+ *   配信ルートへの Redirect URL 組み立て方法。
  *   呼び出し元 (Playlist/position 経由か videoId 直接指定か) によって Redirect 先のパスが異なるため、
  *   呼び出し側から注入する。
  */
@@ -169,7 +202,7 @@ export function resolveAndServe(
     // 解決結果 (hlsMasterManifestUrl) 自体はまだ取得していないためここで呼ぶ。
     resolveVideoInfoFor(config, videoId)
       .then((info) => {
-        serveRelay(info, res)
+        serveRelay(config, videoId, liveProxyTarget, info, res)
       })
       .catch((err: unknown) => {
         res.status(502).json({
@@ -194,7 +227,7 @@ export function resolveAndServe(
           return
         }
         case 'relay': {
-          serveRelay(info, res)
+          serveRelay(config, videoId, liveProxyTarget, info, res)
           return
         }
         case 'proxy': {
@@ -215,7 +248,9 @@ export function resolveAndServe(
           }
           triggerBackgroundDownload(config, videoId)
           if (info.hlsMasterManifestUrl) {
-            res.redirect(302, info.hlsMasterManifestUrl)
+            serveRelay(config, videoId, liveProxyTarget, info, res, () => {
+              redirectToYoutube(res, videoId)
+            })
           } else {
             redirectToYoutube(res, videoId)
           }
