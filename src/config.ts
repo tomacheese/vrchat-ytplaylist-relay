@@ -44,8 +44,8 @@ export interface AppConfig {
    */
   liveRelayIdleTtlMs: number
   /**
-   * Live 再公開ディレクトリ (`liveRelayOutDir`) の合計サイズの上限 (bytes)。VOD の再パッケージは全 segment を
-   * 保持するため、新しい再公開を起動する際にこの上限を超えていれば、最終アクセスが最も古いものから停止する。
+   * VOD の多重化済み segment (`liveRelayOutDir` 配下) の合計サイズの上限 (bytes)。idle TTL まで保持するため、
+   * 新しい VOD 再公開を起動する際や周期スイープでこの上限を超えていれば、最終アクセスが最も古いものから破棄する。Live の再公開は対象外。
    */
   liveRelayMaxBytes: number
   /** "proxy" モードでダウンロードする動画の最大高さ (px)。YouTube 側のフォーマットから、これ以下で最高画質のものを選ぶ。 */

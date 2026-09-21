@@ -1,15 +1,14 @@
 /** `#EXT-X-STREAM-INF` などのタグ行から属性値 (引用符付き/なし) を取り出す。 */
-function attr(line: string, name: string): string | null {
+export function attr(line: string, name: string): string | null {
   const m = new RegExp(`[:,]${name}=("([^"]*)"|[^,]*)`).exec(line)
   return m ? m[2] || m[1] : null
 }
 
 /**
- * URI を master の URL を基準に絶対 URL へ解決し、https のものだけ返す。ffmpeg にはローカルの
- * `input.m3u8` として渡すため、相対 URI はそのままでは解決できず、file: などの他スキームは
- * 読み取り先を意図せず広げてしまう。
+ * URI を playlist の URL を基準に絶対 URL へ解決し、https のものだけ返す。file: などの他スキームは
+ * サーバーの読み取り先を意図せず広げてしまうため除外する。
  */
-function toHttpsUrl(uri: string, baseUrl: string): string | null {
+export function toHttpsUrl(uri: string, baseUrl: string): string | null {
   try {
     const url = new URL(uri, baseUrl)
     return url.protocol === 'https:' ? url.href : null

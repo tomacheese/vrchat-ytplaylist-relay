@@ -5,14 +5,17 @@ import { rateLimit } from 'express-rate-limit'
 import { VIDEO_ID_PATTERN, isPlaylistAllowed } from '../config'
 import type { AppConfig } from '../config'
 import { liveRelayDirFor, touchLiveRelay } from '../live-relay'
+import { logger } from '../logger'
+import { ensureVodSegment } from '../vod-relay'
 import { resolveVideoIdForPosition } from '../refresh'
 
 const POSITION_PATTERN = /^(\d+)$/
 /**
- * ffmpeg (`live-relay.ts`) が生成するファイル名 (`live.m3u8` 本体、`live0.ts` 等の segment) の
- * みを許可する。任意のファイル名を受け付けないことが path traversal 対策になる。
+ * ffmpeg (`live-relay.ts`) が生成するファイル名 (`live.m3u8` 本体、`live0.ts` 等の segment) と、
+ * VOD の多重化 segment (`seg0.ts` 等、`vod-relay.ts`) のみを許可する。任意のファイル名を受け付けないことが path traversal 対策になる。
  */
-const LIVE_FILE_PATTERN = /^live\.m3u8$|^live\d+\.ts$/
+const LIVE_FILE_PATTERN = /^live\.m3u8$|^live\d+\.ts$|^seg\d+\.ts$/
+const VOD_SEGMENT_PATTERN = /^seg(\d+)\.ts$/
 
 /** Live 再公開の segment 取得は VOD 単体ファイル配信よりリクエスト頻度が高い想定だが、v1 では既存 (mediaRateLimit) と同水準を流用する。 */
 const liveRateLimit = rateLimit({ windowMs: 60_000, limit: 60 })
@@ -44,7 +47,25 @@ function serveLiveFile(
     res.status(404).json({ error: 'invalid file' })
     return
   }
-  res.sendFile(filePath)
+  const segment = VOD_SEGMENT_PATTERN.exec(file)
+  if (segment === null) {
+    res.sendFile(filePath)
+    return
+  }
+  ensureVodSegment(videoId, Number(segment[1]))
+    .then((segmentPath) => {
+      if (segmentPath === null) {
+        res.status(404).json({ error: 'unknown segment' })
+        return
+      }
+      res.sendFile(segmentPath)
+    })
+    .catch((err: unknown) => {
+      logger.error(
+        `failed to prepare segment ${file} for video ${videoId}: ${(err as Error).message}`
+      )
+      res.status(502).json({ error: 'failed to prepare segment' })
+    })
 }
 
 /**
