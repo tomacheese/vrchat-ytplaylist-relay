@@ -13,7 +13,7 @@ export interface ResolvedVideoInfo {
   hlsMasterManifestUrl: string | null
   /**
    * `hlsMasterManifestUrl` が master manifest そのもの (音声込みの単一 variant を選べなかった) 場合 true。
-   * relay モードの VOD 配信では、この master を AVC1 のみに絞って ffmpeg で音声込みの HLS に再パッケージして配信する (`live-relay.ts`)。
+   * relay モードの VOD 配信では、この master の AVC1 variant と音声 rendition から segment 単位で ffmpeg により音声込みの MPEG-TS に多重化して配信する (`vod-relay.ts`)。
    */
   hlsIsMaster: boolean
 }
@@ -54,8 +54,8 @@ interface YtdlpVideoJson {
  * `{ url, isMaster: true }` を返す。ただし master に AVC1 の variant が 1 つも無い場合は
  * `isMaster: false` とし、呼び出し側は従来どおりこの URL へ 302 する (絞り込みの対象が無いため)。
  * VOD で AVC1 の variant があるのに音声込みでない場合は `isMaster: true` で、呼び出し側が
- * AVC1 + 音声のみに絞って ffmpeg で再パッケージする (`hls-filter.ts` / `live-relay.ts`)。
- * 再パッケージされない場合 (AVC1 が無い、または Live) のフォールバック時は `videoId` とともに警告ログを
+ * AVC1 + 音声のみに絞って segment 単位で多重化する (`hls-filter.ts` / `vod-relay.ts`)。
+ * 多重化されない場合 (AVC1 が無い、または Live) のフォールバック時は `videoId` とともに警告ログを
  * 出力する (既知の再生不具合を踏む可能性があるため運用上検知できるようにする)。
  */
 function extractHlsMasterManifestUrl(

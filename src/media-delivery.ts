@@ -126,8 +126,8 @@ function serveLiveProxy(
  * "relay" 配信ロジック。解決に失敗していれば 502。
  * 音声込みの AVC1 variant (単一 URL) が選べていればその URL へ 302 する。
  * 選べなかった VOD (YouTube の VOD は音声が別 rendition で、AVC1 variant が映像のみ) は、
- * AVPro が別 rendition の音声を再生できず無音になるため、ffmpeg で音声込みの HLS に
- * 再パッケージして配信する (Live "proxy" と同じ再公開経路。`live-relay.ts` 参照)。
+ * AVPro が別 rendition の音声を再生できず無音になるため、ffmpeg で
+ * segment 単位で音声込みの MPEG-TS に多重化して配信する (Live "proxy" と同じ配信ルート。`vod-relay.ts` 参照)。
  */
 function serveRelay(
   config: AppConfig,
@@ -159,7 +159,7 @@ function serveRelay(
  *   制限付き yt-dlp が googlevideo.com 直リンクの解決に失敗し再生できないことがある。
  * - "relay": yt-dlp が解決した HLS manifest URL (音声込みの AVC1 単一 variant) へ 302 Redirect する。
  *   単一 variant が無い場合、Live は YouTube 生の master manifest URL へ 302 Redirect する。
- *   VOD は音声が別 rendition で AVPro が無音になるため、ffmpeg で音声込みの HLS に再パッケージして配信する
+ *   VOD は音声が別 rendition で AVPro が無音になるため、segment 単位で音声込みの MPEG-TS に多重化して配信する
  *   (Live "proxy" と同じ再公開経路。単一 variant がある場合はステートレスな 302 のみ)。
  * - "proxy" (VOD): Backend 自身が yt-dlp で動画をダウンロード・キャッシュし (media-cache.ts)、
  *   バイト列を直接配信する。ダウンロード完了まで応答をブロックするため、Client 側の Timeout に
