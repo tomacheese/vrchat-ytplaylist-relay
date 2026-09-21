@@ -57,6 +57,7 @@ test('resolves relative URIs against the master URL and drops non-https ones', (
 test('breaks a height tie by BANDWIDTH', () => {
   const m = [
     '#EXTM3U',
+    '#EXT-X-MEDIA:URI="https://a/a",TYPE=AUDIO,GROUP-ID="a",NAME="d"',
     '#EXT-X-STREAM-INF:BANDWIDTH=100,CODECS="avc1.640028,mp4a.40.2",RESOLUTION=1920x1080,AUDIO="a"',
     'https://v/low',
     '#EXT-X-STREAM-INF:BANDWIDTH=900,CODECS="avc1.640028,mp4a.40.2",RESOLUTION=1920x1080,AUDIO="a"',
@@ -64,4 +65,39 @@ test('breaks a height tie by BANDWIDTH', () => {
     '',
   ].join('\n')
   expect(filterAvc1Master(m, BASE)).toContain('https://v/high')
+})
+
+test('does not pick a higher-resolution AVC1 variant that has no playable audio', () => {
+  const m = [
+    '#EXTM3U',
+    '#EXT-X-MEDIA:URI="https://a/234",TYPE=AUDIO,GROUP-ID="234",NAME="d"',
+    // 1080p: AUDIO も音声コーデックも無い (無音)
+    '#EXT-X-STREAM-INF:BANDWIDTH=9,CODECS="avc1.640028",RESOLUTION=1920x1080',
+    'https://v/1080-silent',
+    stream('avc1.4D401F,mp4a.40.2', '1280x720', '234', 'https://v/720'),
+    '',
+  ].join('\n')
+  const out = filterAvc1Master(m, BASE) ?? ''
+  expect(out).toContain('https://v/720')
+  expect(out).not.toContain('1080-silent')
+})
+
+test('returns null when the referenced audio group has no usable rendition', () => {
+  const m = [
+    '#EXTM3U',
+    '#EXT-X-MEDIA:URI="file:///etc/passwd",TYPE=AUDIO,GROUP-ID="234",NAME="x"',
+    stream('avc1.640028,mp4a.40.2', '1920x1080', '234', 'https://v/1080'),
+    '',
+  ].join('\n')
+  expect(filterAvc1Master(m, BASE)).toBeNull()
+})
+
+test('accepts a variant without an audio group when its own CODECS include audio', () => {
+  const m = [
+    '#EXTM3U',
+    '#EXT-X-STREAM-INF:BANDWIDTH=1,CODECS="avc1.640028,mp4a.40.2",RESOLUTION=1920x1080',
+    'https://v/muxed',
+    '',
+  ].join('\n')
+  expect(filterAvc1Master(m, BASE)).toContain('https://v/muxed')
 })

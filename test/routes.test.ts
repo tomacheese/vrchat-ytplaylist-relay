@@ -596,6 +596,65 @@ test('GET /:playlistId/:position.mp4 in hybrid mode falls back to a relay redire
   }
 })
 
+test('GET /:playlistId/:position.mp4 in hybrid mode falls back to youtube.com when the VOD remux throws', async () => {
+  const hybridDataDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'yrp-route-test-hybrid-remux-throw-')
+  )
+  const hybridConfig: AppConfig = {
+    ...config,
+    dataDir: hybridDataDir,
+    mediaCacheDir: path.join(hybridDataDir, 'cache'),
+    mediaDeliveryMode: 'hybrid',
+    ytdlpPath: 'yt-dlp-does-not-exist',
+  }
+  vi.mocked(resolveVideoInfo).mockResolvedValue({
+    isLive: false,
+    hlsMasterManifestUrl: 'https://manifest.googlevideo.com/v1/master.m3u8',
+    hlsIsMaster: true,
+  })
+  // ENOSPC などで ensureLiveRelay が reject しても、hybrid は 502 ではなく redirect にフォールバックする。
+  vi.mocked(ensureLiveRelay).mockRejectedValue(new Error('ENOSPC'))
+  const { state, manifest } = buildManifest(
+    null,
+    'pl1',
+    100,
+    [{ id: 'v1', title: 'Track 1', duration: 100 }],
+    Date.now()
+  )
+  persistSlotState(hybridDataDir, state)
+  primeManifestCacheForTests('pl1', manifest)
+
+  const app = createApp(hybridConfig)
+  let hybridServer: Server | undefined
+  try {
+    hybridServer = await new Promise<Server>((resolve) => {
+      const s = app.listen(0, '127.0.0.1', () => {
+        resolve(s)
+      })
+    })
+    const address = hybridServer.address() as AddressInfo
+    const res = await fetch(`http://127.0.0.1:${address.port}/pl1/0.mp4`, {
+      redirect: 'manual',
+    })
+    assert.equal(res.status, 302)
+    assert.equal(
+      res.headers.get('location'),
+      'https://www.youtube.com/watch?v=v1'
+    )
+  } finally {
+    if (hybridServer) {
+      const s = hybridServer
+      await new Promise<void>((resolve, reject) => {
+        s.close((err) => {
+          if (err) reject(err)
+          else resolve()
+        })
+      })
+    }
+    fs.rmSync(hybridDataDir, { recursive: true, force: true })
+  }
+})
+
 test('GET /:playlistId/:position.mp4 with a live video in proxy mode redirects to the live-relay route', async () => {
   const liveProxyDataDir = fs.mkdtempSync(
     path.join(os.tmpdir(), 'yrp-route-test-live-proxy-')

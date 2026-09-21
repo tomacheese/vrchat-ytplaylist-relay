@@ -106,6 +106,13 @@ function serveLiveProxy(
       res.redirect(302, redirectPath)
     })
     .catch((err: unknown) => {
+      if (onFailure) {
+        logger.warn(
+          `live relay for video ${videoId} failed: ${(err as Error).message}`
+        )
+        onFailure()
+        return
+      }
       res.status(502).json({
         error: `failed to start live relay: ${(err as Error).message}`,
       })

@@ -179,6 +179,33 @@ async function evictIdleLiveRelays(idleTtlMs: number): Promise<void> {
   await Promise.all(targets.map((videoId) => stopLiveRelay(videoId)))
 }
 
+/** プロセス起動時に 1 回だけ実行する、前回プロセスが残した再公開ディレクトリの削除。 */
+let orphanCleanup: Promise<void> | null = null
+
+/**
+ * `liveRelayOutDir` 直下の残存ディレクトリを削除する。再起動前の ffmpeg が残した segment (VOD は全編分) は
+ * どの `relays` からも参照されず、idle eviction の対象にもならないため、最初の呼び出しで一掃する。
+ * 全呼び出し元が同じ Promise を待つので、この削除が終わる前に新しい再公開が起動して巻き込まれることはない。
+ */
+function cleanupOrphanDirs(config: AppConfig): Promise<void> {
+  orphanCleanup ??= (async () => {
+    const entries = await fs.promises
+      .readdir(config.liveRelayOutDir)
+      .catch(() => [])
+    await Promise.all(
+      entries
+        .filter((name) => !relays.has(name))
+        .map((name) =>
+          fs.promises.rm(path.join(config.liveRelayOutDir, name), {
+            recursive: true,
+            force: true,
+          })
+        )
+    )
+  })()
+  return orphanCleanup
+}
+
 /** ディレクトリ直下のファイルの合計サイズ (bytes)。存在しなければ 0。 */
 async function dirSize(dir: string): Promise<number> {
   const entries = await fs.promises
@@ -198,7 +225,9 @@ async function dirSize(dir: string): Promise<number> {
 /**
  * 登録済みの Live 再公開ディレクトリの合計サイズが `liveRelayMaxBytes` を超えていれば、最終アクセスが
  * 最も古いものから停止する。VOD の再パッケージは全 segment を保持するため、新しい再公開を起動する前に呼ぶ。
- * 起動中 (最初の segment 未書き出し) のものは対象外。これから起動する再公開の分は含まないため上限は目安。
+ * 起動中 (最初の segment 未書き出し) のものは対象外。新規起動前に加え、周期スイープ (`ensureSweeper`) からも
+ * 呼ばれるため、実行中の VOD が上限を超えて書き込み続けた場合も (単一動画で上限を超える場合はその再生ごと) 停止する。
+ * 新規起動前の呼び出しでは、これから起動する再公開の分は含まないため上限は目安。
  */
 async function enforceMaxBytes(config: AppConfig): Promise<void> {
   const sizes = new Map<string, number>()
@@ -223,6 +252,41 @@ async function enforceMaxBytes(config: AppConfig): Promise<void> {
     )
     await stopLiveRelay(state.videoId)
   }
+}
+
+/** 周期スイープの間隔。VOD は全 segment を保持するため、リクエストが無くても idle 削除と容量制限を評価し続ける。 */
+const SWEEP_INTERVAL_MS = 15_000
+
+/** 周期スイープが参照する直近の config。`ensureLiveRelay` 呼び出しごとに更新する。 */
+let sweepConfig: AppConfig | null = null
+let sweeper: ReturnType<typeof setInterval> | null = null
+
+/**
+ * idle 削除 (`evictIdleLiveRelays`) と容量制限 (`enforceMaxBytes`) を周期的に実行する。
+ * `ensureLiveRelay` 内のインライン評価は新規リクエストが来ない限り走らないため、最後の視聴者が離れた後や、
+ * 実行中の VOD が上限を超えて書き込み続ける間もディスクを解放できるようにする。`unref` でプロセス終了は妨げない。
+ */
+function ensureSweeper(config: AppConfig): void {
+  sweepConfig = config
+  if (sweeper !== null) return
+  sweeper = setInterval(() => {
+    const current = sweepConfig
+    if (current === null) return
+    evictIdleLiveRelays(current.liveRelayIdleTtlMs)
+      .then(() => enforceMaxBytes(current))
+      .catch((err: unknown) => {
+        logger.warn(`live relay sweep failed: ${(err as Error).message}`)
+      })
+  }, SWEEP_INTERVAL_MS)
+  sweeper.unref()
+}
+
+/** テスト用: 周期スイープと残存ディレクトリ削除の状態を初期化する。 */
+export function resetLiveRelaySweepForTests(): void {
+  if (sweeper !== null) clearInterval(sweeper)
+  sweeper = null
+  sweepConfig = null
+  orphanCleanup = null
 }
 
 /** videoId の Live 再公開ファイルの配信ルートへアクセスがあった際に呼ぶ。 */
@@ -465,6 +529,8 @@ export async function ensureLiveRelay(
   config: AppConfig,
   videoId: string
 ): Promise<{ outDir: string; playlistFileName: string } | { error: string }> {
+  await cleanupOrphanDirs(config)
+  ensureSweeper(config)
   await evictIdleLiveRelays(config.liveRelayIdleTtlMs)
 
   const existing = relays.get(videoId)

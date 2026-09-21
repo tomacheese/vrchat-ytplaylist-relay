@@ -83,7 +83,9 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
   }
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  const { resetLiveRelaySweepForTests } = await import('../src/live-relay')
+  resetLiveRelaySweepForTests()
   const mocks = makeSpawnMock()
   spawnMock = mocks.spawnMock
   killMocks = mocks.killMocks
@@ -91,6 +93,7 @@ beforeEach(() => {
 })
 
 afterEach(async () => {
+  vi.useRealTimers()
   vi.unstubAllGlobals()
   const { stopLiveRelay } = await import('../src/live-relay')
   await stopLiveRelay('testVideo01')
@@ -446,4 +449,34 @@ test('starting a VOD relay stops the least recently used relay when the total si
   assert.ok(!fs.existsSync(first.outDir))
   assert.ok(fs.existsSync(second.outDir))
   vi.mocked(resolveVideoInfo).mockReset()
+})
+
+test('the periodic sweep stops an idle relay even when no further request arrives', async () => {
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] })
+  const { ensureLiveRelay, touchLiveRelay } = await import('../src/live-relay')
+  const config = makeConfig({ liveRelayIdleTtlMs: 60_000 })
+  const result = await ensureLiveRelay(config, 'testVideo01')
+  assert.ok('outDir' in result)
+  touchLiveRelay('testVideo01')
+
+  await vi.advanceTimersByTimeAsync(2 * 60_000)
+  // stopLiveRelay は SIGTERM 後の close を待つため、実タイマー相当の猶予を与える。
+  vi.useRealTimers()
+  await new Promise((resolve) => setTimeout(resolve, 50))
+
+  assert.ok(!fs.existsSync(result.outDir))
+})
+
+test('the first ensureLiveRelay removes directories left by a previous process', async () => {
+  const { ensureLiveRelay } = await import('../src/live-relay')
+  const config = makeConfig()
+  const stale = path.join(config.liveRelayOutDir, 'staleVideo1')
+  fs.mkdirSync(stale, { recursive: true })
+  fs.writeFileSync(path.join(stale, 'live0.ts'), 'old segment')
+
+  const result = await ensureLiveRelay(config, 'testVideo01')
+
+  assert.ok('outDir' in result)
+  assert.ok(!fs.existsSync(stale))
+  assert.ok(fs.existsSync(result.outDir))
 })
