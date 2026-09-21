@@ -142,6 +142,15 @@ test('ensureVodSegment muxes one segment on demand (init prepended), shares conc
     'bytes:https://v.example/s-init|bytes:https://v.example/s0|' +
       'bytes:https://a.example/s-init|bytes:https://a.example/s0|'
   )
+  await vi.waitFor(() => {
+    assert.equal(spawnMock.mock.calls.length, 2)
+  })
+  const offsets = spawnMock.mock.calls.map(([, args]) => {
+    const i = args.indexOf('-output_ts_offset')
+    return args[i + 1]
+  })
+  assert.deepEqual(offsets, ['0.000', '5.000'])
+  assert.ok(!spawnMock.mock.calls[0][1].includes('-copyts'))
   // 先読みの segment 1 も作られる。作業用の一時ファイルは残らない。
   await vi.waitFor(() => {
     assert.ok(fs.existsSync(path.join(outDir, 'seg1.ts')))
