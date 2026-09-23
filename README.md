@@ -17,6 +17,20 @@ pnpm start
 
 yt-dlp は YouTube 抽出に外部 JS ランタイム deno を必須とする (`--js-runtimes deno`) ため、ローカル実行時は PATH 上に `deno` をインストールしておく必要がある (Docker 実行時は Image に同梱済み)。
 
+## ログ
+
+サーバーと CLI は標準出力 / 標準エラー出力へ 1 行 1 JSON object のログを出す。共通 field は `timestamp`、`level`、`event`、`message` で、処理に応じて `request_id`、`operation`、`operation_id`、`duration_ms`、対象の playlist / video ID、`error` の型・message・stack を含む。`info` は標準出力、`warn` と `error` は標準エラー出力へ出る。
+
+HTTP request にはランダムな `request_id` が割り当てられ、response の `X-Request-Id` とログ field の値が一致する。request completion event には route template、HTTP status、処理時間が入り、失敗 event には status と例外情報が入る。`/health` の通常成功ログは省略する。たとえば Docker では次のように JSON event や request ID を検索できる。
+
+```bash
+docker logs -f vrchat-ytplaylist-relay
+docker logs vrchat-ytplaylist-relay 2>&1 | grep '"event":"playlist.refresh.failed"'
+docker logs vrchat-ytplaylist-relay 2>&1 | grep '"request_id":"<X-Request-Id value>"'
+```
+
+Authorization header、cookie、client IP、request body / query、完全な media URL、動画タイトルは記録しない。例外と yt-dlp / ffmpeg の診断文字列から URL query / fragment、既知の token / signature / Bearer 値を伏せ、改行を escape して診断文字列を最大 4 KiB に制限する。redaction は既知の credential 形式を対象にするため、ログ event に秘密情報を渡さないこと。
+
 `config/playlists.json` は任意。無い場合は allowlist が無効になり、要求された任意の
 playlistId をそのまま取得・配信する (事前登録不要)。特定の Playlist だけに絞りたい場合や
 Playlist ごとに `maxSlots` を上書きしたい場合は `cp config/playlists.json.example

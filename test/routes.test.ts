@@ -12,6 +12,13 @@ import { resolveVideoInfo } from '../src/live-resolve'
 import { buildManifest, persistSlotState } from '../src/manifest-store'
 import { primeManifestCacheForTests } from '../src/refresh'
 
+/** JSON ログを object として検証し、field assertion に使える形で返す。 */
+function parseLogRecord(line: string): Record<string, unknown> {
+  const parsed: unknown = JSON.parse(line)
+  assert.ok(parsed && typeof parsed === 'object' && !Array.isArray(parsed))
+  return parsed as Record<string, unknown>
+}
+
 // isLive 判定 (resolveVideoInfo) と Live proxy 再公開 (ensureLiveRelay) は実 yt-dlp / ffmpeg に
 // 依存するため、Media Endpoint のモード分岐ロジック自体を検証するテストではモックする。
 // liveRelayDirFor / touchLiveRelay / stopLiveRelay は実ファイルシステムで動作を検証するため、
@@ -158,6 +165,112 @@ test('GET /health is public (no Authorization required)', async () => {
   assert.equal(res.status, 200)
 })
 
+test('HTTP request logs share the generated response request ID and omit the raw path', async () => {
+  const output = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+  try {
+    const res = await fetch(`${baseUrl}/__test-ip?token=private-value`, {
+      headers: { 'X-Request-Id': 'untrusted-request-id' },
+    })
+    const requestId = res.headers.get('x-request-id')
+    assert.ok(requestId)
+    assert.notEqual(requestId, 'untrusted-request-id')
+
+    const records = output.mock.calls.map(([line]) =>
+      parseLogRecord(line as string)
+    )
+    const requestLog = records.find(
+      (record) => record.event === 'http.request.completed'
+    )
+    assert.ok(requestLog)
+    assert.equal(requestLog.request_id, requestId)
+    assert.equal(requestLog.route, '/__test-ip')
+    assert.equal(requestLog.method, 'GET')
+    assert.equal(requestLog.status_code, 200)
+    assert.ok(
+      typeof requestLog.duration_ms === 'number' && requestLog.duration_ms >= 0
+    )
+    assert.ok(
+      output.mock.calls.every(
+        ([line]) => !(line as string).includes('private-value')
+      )
+    )
+    assert.ok(
+      output.mock.calls.every(([line]) => !(line as string).includes('?token='))
+    )
+  } finally {
+    output.mockRestore()
+  }
+})
+
+test('successful health checks do not emit request completion logs', async () => {
+  const output = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+  try {
+    const res = await fetch(`${baseUrl}/health`)
+    assert.equal(res.status, 200)
+    assert.ok(res.headers.get('x-request-id'))
+    assert.equal(output.mock.calls.length, 0)
+  } finally {
+    output.mockRestore()
+  }
+})
+
+test('media delivery and HTTP completion logs share request and operation IDs', async () => {
+  const output = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+  try {
+    const res = await fetch(`${baseUrl}/pl1/0.mp4`, { redirect: 'manual' })
+    assert.equal(res.status, 302)
+
+    const records = output.mock.calls.map(([line]) =>
+      parseLogRecord(line as string)
+    )
+    const requestLog = records.find(
+      (record) => record.event === 'http.request.completed'
+    )
+    const deliveryLog = records.find(
+      (record) => record.event === 'media.delivery.completed'
+    )
+    assert.ok(requestLog)
+    assert.ok(deliveryLog)
+    assert.equal(deliveryLog.request_id, requestLog.request_id)
+    assert.ok(deliveryLog.operation_id)
+    assert.ok(
+      typeof deliveryLog.duration_ms === 'number' &&
+        deliveryLog.duration_ms >= 0
+    )
+  } finally {
+    output.mockRestore()
+  }
+})
+
+test('Express parser errors are logged with a request ID and preserve their status', async () => {
+  const output = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+  try {
+    const res = await fetch(`${baseUrl}/admin/refresh`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{invalid',
+    })
+    assert.equal(res.status, 400)
+    const requestId = res.headers.get('x-request-id')
+    assert.ok(requestId)
+    const records = output.mock.calls.flatMap(([line]) => {
+      try {
+        return [JSON.parse(line as string) as Record<string, unknown>]
+      } catch {
+        return []
+      }
+    })
+    const errorLog = records.find(
+      (record) => record.event === 'http.request.failed'
+    )
+    assert.ok(errorLog)
+    assert.equal(errorLog.request_id, requestId)
+    assert.equal(errorLog.route, 'unmatched')
+  } finally {
+    output.mockRestore()
+  }
+})
+
 test('GET /:playlistId/manifest.json is public and returns the cached manifest', async () => {
   const res = await fetch(`${baseUrl}/pl1/manifest.json`)
   assert.equal(res.status, 200, 'manifest.json must NOT require Authorization')
@@ -176,6 +289,7 @@ test('GET /:playlistId/:position.mp4 is public and redirects to the canonical Yo
 })
 
 test('GET /:playlistId/:position/live/:file serves the live-relay file and updates its lastAccessedAt', async () => {
+  const output = vi.spyOn(console, 'log').mockImplementation(() => undefined)
   const outDir = liveRelayDirFor(config, 'liveVideo01')
   fs.mkdirSync(outDir, { recursive: true })
   fs.writeFileSync(path.join(outDir, 'live.m3u8'), '#EXTM3U')
@@ -183,7 +297,13 @@ test('GET /:playlistId/:position/live/:file serves the live-relay file and updat
     const res = await fetch(`${baseUrl}/pl1/1/live/live.m3u8`)
     assert.equal(res.status, 200)
     assert.equal(await res.text(), '#EXTM3U')
+    assert.ok(
+      output.mock.calls.every(
+        ([line]) => !(line as string).includes('http.request.completed')
+      )
+    )
   } finally {
+    output.mockRestore()
     fs.rmSync(outDir, { recursive: true, force: true })
   }
 })
@@ -203,8 +323,19 @@ test('GET /:playlistId/:position/live/:file returns 404 for a file name outside 
 })
 
 test('GET /:playlistId/:position/live/:file returns 404 when the live-relay file does not exist', async () => {
-  const res = await fetch(`${baseUrl}/pl1/1/live/live.m3u8`)
-  assert.equal(res.status, 404)
+  const output = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+  try {
+    const res = await fetch(`${baseUrl}/pl1/1/live/live.m3u8`)
+    assert.equal(res.status, 404)
+    const record = output.mock.calls
+      .map(([line]) => parseLogRecord(line as string))
+      .find((entry) => entry.event === 'http.request.completed')
+    assert.ok(record)
+    assert.equal(record.route, '/:playlistId/:position/live/:file')
+    assert.equal(record.status_code, 404)
+  } finally {
+    output.mockRestore()
+  }
 })
 
 // 実 YouTube videoId 形式 (11 文字) を満たすダミー videoId。Playlist に属さず videoId 直接指定
@@ -242,6 +373,7 @@ test('GET /live/:videoId/:file returns 404 for a malformed videoId', async () =>
 })
 
 test('GET /live/:videoId/:file serves the live-relay file directly (videoId-keyed, no playlistId)', async () => {
+  const output = vi.spyOn(console, 'log').mockImplementation(() => undefined)
   const outDir = liveRelayDirFor(config, DIRECT_VIDEO_ID)
   fs.mkdirSync(outDir, { recursive: true })
   fs.writeFileSync(path.join(outDir, 'live.m3u8'), '#EXTM3U')
@@ -249,7 +381,13 @@ test('GET /live/:videoId/:file serves the live-relay file directly (videoId-keye
     const res = await fetch(`${baseUrl}/live/${DIRECT_VIDEO_ID}/live.m3u8`)
     assert.equal(res.status, 200)
     assert.equal(await res.text(), '#EXTM3U')
+    assert.ok(
+      output.mock.calls.every(
+        ([line]) => !(line as string).includes('http.request.completed')
+      )
+    )
   } finally {
+    output.mockRestore()
     fs.rmSync(outDir, { recursive: true, force: true })
   }
 })
@@ -586,16 +724,31 @@ test('live relay-redirect falls back to YouTube when video resolution rejects', 
 })
 
 test('relay-redirect falls back to YouTube when the HLS manifest is missing', async () => {
+  const output = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
   vi.mocked(resolveVideoInfo).mockResolvedValue({
     isLive: false,
     hlsMasterManifestUrl: null,
     hlsIsMaster: false,
   })
 
-  const response = await requestPositionWithModes('relay-redirect', 'redirect')
+  try {
+    const response = await requestPositionWithModes(
+      'relay-redirect',
+      'redirect'
+    )
 
-  assert.equal(response.status, 302)
-  assert.equal(response.location, 'https://www.youtube.com/watch?v=v1')
+    assert.equal(response.status, 302)
+    assert.equal(response.location, 'https://www.youtube.com/watch?v=v1')
+    const record = output.mock.calls
+      .map(([line]) => parseLogRecord(line as string))
+      .find((entry) => entry.event === 'media.delivery.fallback')
+    assert.ok(record)
+    assert.equal(record.video_id, 'v1')
+    assert.equal(record.fallback, 'configured_redirect')
+    assert.ok(record.request_id)
+  } finally {
+    output.mockRestore()
+  }
 })
 
 test('relay-redirect preserves the relay URL when resolution succeeds', async () => {

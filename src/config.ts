@@ -82,7 +82,9 @@ function readServerConfig(configPath: string): ServerConfig {
   } catch (err) {
     if (err instanceof Error && 'code' in err && err.code === 'ENOENT') {
       logger.warn(
-        `No config file found at ${configPath}; allowlist is disabled (any playlistId is accepted)`
+        'config.playlist_file.missing',
+        'Playlist allowlist is disabled because its config file was not found',
+        { config_path: configPath }
       )
       return { playlists: [] }
     }
@@ -103,7 +105,9 @@ function readServerConfig(configPath: string): ServerConfig {
   }
   if (parsed.playlists.length === 0) {
     logger.warn(
-      `Config at ${configPath} has an empty "playlists" array; allowlist is disabled (any playlistId is accepted)`
+      'config.playlist_allowlist.empty',
+      'Playlist allowlist is disabled because no playlists are configured',
+      { config_path: configPath }
     )
   }
   return parsed

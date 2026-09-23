@@ -10,7 +10,6 @@ import {
   triggerBackgroundDownload,
 } from './media-cache'
 import { logger } from './logger'
-import { YtdlpError } from './ytdlp'
 
 /**
  * Live proxy モードでの再公開ファイル配信ルートへの Redirect URL を組み立てるための情報。
@@ -66,9 +65,11 @@ function serveVodProxy(
       res.status(502).json({
         error: `failed to fetch video: ${(err as Error).message}`,
       })
-      if (err instanceof YtdlpError && err.stderr.length > 0) {
-        logger.error(err.stderr)
-      }
+      logger.error('media.delivery.failed', 'Failed to fetch video', {
+        video_id: videoId,
+        mode: 'proxy',
+        error: err instanceof Error ? err : new Error(String(err)),
+      })
     })
 }
 
@@ -89,7 +90,16 @@ function serveLiveProxy(
     .then((result) => {
       if ('error' in result) {
         if (onFailure) {
-          logger.warn(`live relay for video ${videoId} failed: ${result.error}`)
+          logger.warn(
+            'media.delivery.fallback',
+            'Live relay failed; using fallback',
+            {
+              video_id: videoId,
+              mode: 'proxy',
+              fallback: 'configured_redirect',
+              error: result.error,
+            }
+          )
           onFailure()
           return
         }
@@ -108,7 +118,14 @@ function serveLiveProxy(
     .catch((err: unknown) => {
       if (onFailure) {
         logger.warn(
-          `live relay for video ${videoId} failed: ${(err as Error).message}`
+          'media.delivery.fallback',
+          'Live relay failed; using fallback',
+          {
+            video_id: videoId,
+            mode: 'proxy',
+            fallback: 'configured_redirect',
+            error: err instanceof Error ? err : new Error(String(err)),
+          }
         )
         onFailure()
         return
@@ -116,9 +133,11 @@ function serveLiveProxy(
       res.status(502).json({
         error: `failed to start live relay: ${(err as Error).message}`,
       })
-      if (err instanceof YtdlpError && err.stderr.length > 0) {
-        logger.error(err.stderr)
-      }
+      logger.error('media.delivery.failed', 'Failed to start live relay', {
+        video_id: videoId,
+        mode: 'proxy',
+        error: err instanceof Error ? err : new Error(String(err)),
+      })
     })
 }
 
@@ -139,10 +158,19 @@ function serveRelay(
 ): void {
   if (!info.hlsMasterManifestUrl) {
     if (onRelayFailure) {
+      logger.warn('media.delivery.fallback', 'HLS manifest was unavailable', {
+        video_id: videoId,
+        mode: 'relay',
+        fallback: 'configured_redirect',
+      })
       onRelayFailure()
       return
     }
     res.status(502).json({ error: 'failed to resolve HLS manifest' })
+    logger.error('media.delivery.failed', 'Failed to resolve HLS manifest', {
+      video_id: videoId,
+      mode: 'relay',
+    })
     return
   }
   if (info.hlsIsMaster && !info.isLive) {
@@ -193,103 +221,159 @@ export function resolveAndServe(
   liveProxyTarget: LiveProxyTarget,
   res: Response
 ): void {
-  const skipLiveCheck =
-    config.mediaDeliveryMode === config.liveDeliveryMode &&
-    (config.mediaDeliveryMode === 'redirect' ||
-      config.mediaDeliveryMode === 'relay')
-
-  if (skipLiveCheck) {
-    if (config.mediaDeliveryMode === 'redirect') {
-      redirectToYoutube(res, videoId)
-      return
-    }
-    // "relay": スキップ条件からこの時点で config.mediaDeliveryMode === 'relay' が確定するが、
-    // 解決結果 (hlsMasterManifestUrl) 自体はまだ取得していないためここで呼ぶ。
-    resolveVideoInfoFor(config, videoId)
-      .then((info) => {
-        serveRelay(config, videoId, liveProxyTarget, info, res)
-      })
-      .catch((err: unknown) => {
-        res.status(502).json({
-          error: `failed to resolve position: ${(err as Error).message}`,
-        })
-        if (err instanceof YtdlpError && err.stderr.length > 0) {
-          logger.error(err.stderr)
+  logger.withContext(
+    {
+      operation: 'media.delivery',
+      operation_id: logger.newOperationId(),
+    },
+    () => {
+      const startedAt = performance.now()
+      let effectiveMode = config.mediaDeliveryMode
+      let isLive: boolean | undefined
+      res.once('finish', () => {
+        const fields = {
+          video_id: videoId,
+          mode: effectiveMode,
+          is_live: isLive,
+          status_code: res.statusCode,
+          duration_ms: Math.round(performance.now() - startedAt),
+        }
+        if (res.statusCode >= 500) {
+          logger.error(
+            'media.delivery.completed',
+            'Media delivery failed',
+            fields
+          )
+        } else {
+          logger.info(
+            'media.delivery.completed',
+            'Media delivery completed',
+            fields
+          )
         }
       })
-    return
-  }
 
-  resolveVideoInfoFor(config, videoId)
-    .then((info) => {
-      const effectiveMode = info.isLive
-        ? config.liveDeliveryMode
-        : config.mediaDeliveryMode
+      const skipLiveCheck =
+        config.mediaDeliveryMode === config.liveDeliveryMode &&
+        (config.mediaDeliveryMode === 'redirect' ||
+          config.mediaDeliveryMode === 'relay')
 
-      switch (effectiveMode) {
-        case 'redirect': {
+      if (skipLiveCheck) {
+        if (config.mediaDeliveryMode === 'redirect') {
+          effectiveMode = 'redirect'
           redirectToYoutube(res, videoId)
           return
         }
-        case 'relay': {
-          serveRelay(config, videoId, liveProxyTarget, info, res)
-          return
-        }
-        case 'relay-redirect': {
-          serveRelay(config, videoId, liveProxyTarget, info, res, () => {
-            logger.warn(
-              `relay failed for video ${videoId}; falling back to YouTube redirect`
-            )
-            redirectToYoutube(res, videoId)
+        // "relay": スキップ条件からこの時点で config.mediaDeliveryMode === 'relay' が確定するが、
+        // 解決結果 (hlsMasterManifestUrl) 自体はまだ取得していないためここで呼ぶ。
+        resolveVideoInfoFor(config, videoId)
+          .then((info) => {
+            isLive = info.isLive
+            effectiveMode = 'relay'
+            serveRelay(config, videoId, liveProxyTarget, info, res)
           })
-          return
-        }
-        case 'proxy': {
-          if (info.isLive) {
-            serveLiveProxy(config, videoId, liveProxyTarget, res)
-          } else {
-            serveVodProxy(config, videoId, res)
-          }
-          return
-        }
-        case 'hybrid': {
-          // liveDeliveryMode は "hybrid" を許容しないため (config.ts のバリデーション)、
-          // effectiveMode が "hybrid" になるのは info.isLive === false の場合のみ。
-          const cachedPath = getFreshOrStale(config, videoId)
-          if (cachedPath) {
-            res.sendFile(path.resolve(cachedPath))
-            return
-          }
-          triggerBackgroundDownload(config, videoId)
-          if (info.hlsMasterManifestUrl) {
-            serveRelay(config, videoId, liveProxyTarget, info, res, () => {
-              redirectToYoutube(res, videoId)
+          .catch((err: unknown) => {
+            res.status(502).json({
+              error: `failed to resolve position: ${(err as Error).message}`,
             })
-          } else {
-            redirectToYoutube(res, videoId)
-          }
-        }
-      }
-    })
-    .catch((err: unknown) => {
-      if (
-        config.mediaDeliveryMode === 'relay-redirect' ||
-        config.liveDeliveryMode === 'relay-redirect'
-      ) {
-        if (err instanceof YtdlpError && err.stderr.length > 0) {
-          logger.error(err.stderr)
-        }
-        logger.warn(
-          `relay resolution failed for video ${videoId}; falling back to YouTube redirect`
-        )
-        redirectToYoutube(res, videoId)
+            logger.error('media.delivery.failed', 'Failed to resolve media', {
+              video_id: videoId,
+              mode: 'relay',
+              error: err instanceof Error ? err : new Error(String(err)),
+            })
+          })
         return
       }
-      res.status(502).json({
-        error: `failed to resolve position: ${(err as Error).message}`,
-      })
-      if (err instanceof YtdlpError && err.stderr.length > 0) {
-        logger.error(err.stderr)
-      }
-    })
+
+      resolveVideoInfoFor(config, videoId)
+        .then((info) => {
+          effectiveMode = info.isLive
+            ? config.liveDeliveryMode
+            : config.mediaDeliveryMode
+          isLive = info.isLive
+
+          switch (effectiveMode) {
+            case 'redirect': {
+              redirectToYoutube(res, videoId)
+              return
+            }
+            case 'relay': {
+              serveRelay(config, videoId, liveProxyTarget, info, res)
+              return
+            }
+            case 'relay-redirect': {
+              serveRelay(config, videoId, liveProxyTarget, info, res, () => {
+                logger.warn(
+                  'media.delivery.fallback',
+                  'Relay failed; redirecting to YouTube',
+                  {
+                    video_id: videoId,
+                    mode: 'relay-redirect',
+                    fallback: 'youtube',
+                  }
+                )
+                redirectToYoutube(res, videoId)
+              })
+              return
+            }
+            case 'proxy': {
+              if (info.isLive) {
+                serveLiveProxy(config, videoId, liveProxyTarget, res)
+              } else {
+                serveVodProxy(config, videoId, res)
+              }
+              return
+            }
+            case 'hybrid': {
+              // liveDeliveryMode は "hybrid" を許容しないため (config.ts のバリデーション)、
+              // effectiveMode が "hybrid" になるのは info.isLive === false の場合のみ。
+              const cachedPath = getFreshOrStale(config, videoId)
+              if (cachedPath) {
+                res.sendFile(path.resolve(cachedPath))
+                return
+              }
+              triggerBackgroundDownload(config, videoId)
+              if (info.hlsMasterManifestUrl) {
+                serveRelay(config, videoId, liveProxyTarget, info, res, () => {
+                  logger.warn(
+                    'media.delivery.fallback',
+                    'Relay failed; redirecting to YouTube',
+                    { video_id: videoId, mode: 'hybrid', fallback: 'youtube' }
+                  )
+                  redirectToYoutube(res, videoId)
+                })
+              } else {
+                redirectToYoutube(res, videoId)
+              }
+            }
+          }
+        })
+        .catch((err: unknown) => {
+          if (
+            config.mediaDeliveryMode === 'relay-redirect' ||
+            config.liveDeliveryMode === 'relay-redirect'
+          ) {
+            logger.warn(
+              'media.delivery.fallback',
+              'Relay resolution failed; redirecting to YouTube',
+              {
+                video_id: videoId,
+                mode: 'relay-redirect',
+                fallback: 'youtube',
+                error: err instanceof Error ? err : new Error(String(err)),
+              }
+            )
+            redirectToYoutube(res, videoId)
+            return
+          }
+          res.status(502).json({
+            error: `failed to resolve position: ${(err as Error).message}`,
+          })
+          logger.error('media.delivery.failed', 'Failed to resolve media', {
+            video_id: videoId,
+            error: err instanceof Error ? err : new Error(String(err)),
+          })
+        })
+    }
+  )
 }

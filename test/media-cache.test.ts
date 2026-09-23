@@ -12,6 +12,7 @@ import {
   peekStaleCache,
   prefetchAll,
   selectEvictions,
+  triggerBackgroundDownload,
 } from '../src/media-cache'
 
 function entry(videoId: string, sizeBytes: number, lastAccessedAt: number) {
@@ -190,7 +191,7 @@ test('getFreshOrStale returns the stale path immediately and triggers a backgrou
     // 再ダウンロードは失敗させる (stale 配信自体の検証が目的で、実ダウンロードは不要なため)。
     ytdlpPath: 'yt-dlp-does-not-exist',
   })
-  const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined)
+  const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => undefined)
 
   assert.equal(getFreshOrStale(config, 'v1'), path.join(cacheDir, 'v1.mp4'))
 
@@ -199,12 +200,38 @@ test('getFreshOrStale returns the stale path immediately and triggers a backgrou
   // バックグラウンド起動が壊れていても気付けないため)。
   await vi.waitFor(() => {
     assert.ok(
-      warnSpy.mock.calls.some(([message]) =>
-        message.includes('background download failed for video v1')
+      errorSpy.mock.calls.some(
+        ([event, , fields]) =>
+          event === 'media.cache.download_failed' &&
+          (fields as { video_id?: string }).video_id === 'v1'
       )
     )
   })
-  warnSpy.mockRestore()
+  errorSpy.mockRestore()
+})
+
+test('background cache preparation failures retain a structured error log', async () => {
+  cacheDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'yrp-background-cache-test-')
+  )
+  const blocker = path.join(cacheDir, 'not-a-directory')
+  fs.writeFileSync(blocker, 'file')
+  const config = makeConfig({ mediaCacheDir: path.join(blocker, 'cache') })
+  const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => undefined)
+
+  try {
+    triggerBackgroundDownload(config, 'v1')
+
+    await vi.waitFor(() => {
+      const failed = errorSpy.mock.calls.find(
+        ([event]) => event === 'media.cache.download_failed'
+      )
+      assert.ok(failed)
+      assert.equal((failed[2] as { phase?: string }).phase, 'prepare')
+    })
+  } finally {
+    errorSpy.mockRestore()
+  }
 })
 
 test('getFreshOrStale returns the stale path on repeated calls, each triggering its own background re-download attempt', async () => {
@@ -216,7 +243,7 @@ test('getFreshOrStale returns the stale path on repeated calls, each triggering 
     mediaCacheTtlMs: 60_000,
     ytdlpPath: 'yt-dlp-does-not-exist',
   })
-  const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined)
+  const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => undefined)
 
   assert.equal(getFreshOrStale(config, 'v1'), path.join(cacheDir, 'v1.mp4'))
   assert.equal(getFreshOrStale(config, 'v1'), path.join(cacheDir, 'v1.mp4'))
@@ -225,12 +252,14 @@ test('getFreshOrStale returns the stale path on repeated calls, each triggering 
   // 2 回の呼び出しはそれぞれ独立した再ダウンロード試行として順番に失敗する
   // (2 件とも失敗ログが出るまで待って、両方が実際に起動されたことを確認する)。
   await vi.waitFor(() => {
-    const failureCalls = warnSpy.mock.calls.filter(([message]) =>
-      message.includes('background download failed for video v1')
+    const failureCalls = errorSpy.mock.calls.filter(
+      ([event, , fields]) =>
+        event === 'media.cache.download_failed' &&
+        (fields as { video_id?: string }).video_id === 'v1'
     )
     assert.equal(failureCalls.length, 2)
   })
-  warnSpy.mockRestore()
+  errorSpy.mockRestore()
 })
 
 test('getFreshOrStale returns null when there is no cached entry at all', () => {
@@ -296,13 +325,20 @@ test('prefetchAll pauses subsequent videos after a bot-detection error, without 
   // (v3 は個別にログされず、v2 の時点で残り全件がまとめて打ち切られる)。
   assert.equal(readAttemptCount(countPath), 1)
   assert.ok(
-    warnSpy.mock.calls.some(([message]) => message.includes('bot detection'))
+    warnSpy.mock.calls.some(([event]) => event === 'media.prefetch.failed')
   )
   assert.ok(
-    warnSpy.mock.calls.some(([message]) =>
-      message.includes(
-        'prefetch cooldown active, skipping remaining videos starting from v2'
-      )
+    warnSpy.mock.calls.some((call) => {
+      const fields = call[2]
+      const error = (fields as { error?: { stderr?: string } }).error
+      return error?.stderr?.includes('bot') ?? false
+    })
+  )
+  assert.ok(
+    warnSpy.mock.calls.some(
+      ([event, , fields]) =>
+        event === 'media.prefetch.cooldown' &&
+        (fields as { video_id?: string }).video_id === 'v2'
     )
   )
   warnSpy.mockRestore()
@@ -352,8 +388,10 @@ test('prefetchAll gives up after the retry also fails on a transient error', asy
 
   assert.equal(readAttemptCount(countPath), 2)
   assert.ok(
-    warnSpy.mock.calls.some(([message]) =>
-      message.includes('prefetch failed for video v1 after retry')
+    warnSpy.mock.calls.some(
+      ([event, , fields]) =>
+        event === 'media.prefetch.failed' &&
+        (fields as { reason?: string }).reason === 'after retry'
     )
   )
   warnSpy.mockRestore()

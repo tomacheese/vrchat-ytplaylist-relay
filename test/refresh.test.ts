@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { test } from 'vitest'
+import { test, vi } from 'vitest'
 import type { AppConfig } from '../src/config'
 import { buildManifest, persistSlotState } from '../src/manifest-store'
 import {
@@ -13,6 +13,13 @@ import {
   resolveVideoIdForPosition,
 } from '../src/refresh'
 import type { Manifest } from '../src/types'
+
+/** JSON ログを object として検証し、field assertion に使える形で返す。 */
+function parseLogRecord(line: string): Record<string, unknown> {
+  const parsed: unknown = JSON.parse(line)
+  assert.ok(parsed && typeof parsed === 'object' && !Array.isArray(parsed))
+  return parsed as Record<string, unknown>
+}
 
 function tempDataDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'yrp-refresh-test-'))
@@ -94,6 +101,46 @@ test('getManifestForClient returns null when there is no cache and yt-dlp fails'
 
   assert.equal(result.manifest, null)
   assert.ok(result.error)
+})
+
+test('failed playlist refresh logs structured error, operation ID, and duration', async () => {
+  const config = baseConfig('pl-structured-error')
+  const output = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+  try {
+    await refreshPlaylist(config, 'pl-structured-error')
+    const records = output.mock.calls.map(([line]) =>
+      parseLogRecord(line as string)
+    )
+    const record = records.find(
+      (entry) => entry.event === 'playlist.refresh.failed'
+    ) as
+      | {
+          playlist_id: string
+          operation: string
+          operation_id: string
+          duration_ms: number
+          error: { type: string; message: string; code?: string }
+        }
+      | undefined
+
+    assert.ok(record)
+    assert.equal(record.playlist_id, 'pl-structured-error')
+    assert.equal(record.operation, 'playlist.refresh')
+    assert.ok(record.operation_id)
+    assert.ok(record.duration_ms >= 0)
+    assert.equal(record.error.type, 'YtdlpError')
+    assert.ok(record.error.message.includes('yt-dlp'))
+    const ytdlpRecord = records.find(
+      (entry) => entry.event === 'ytdlp.operation.failed'
+    )
+    assert.ok(ytdlpRecord)
+    assert.equal(ytdlpRecord.operation, 'ytdlp.run')
+    assert.ok(ytdlpRecord.operation_id)
+  } finally {
+    output.mockRestore()
+    vi.restoreAllMocks()
+  }
 })
 
 test('refreshAll targets playlistIds with persisted slot state when the allowlist is empty', async () => {

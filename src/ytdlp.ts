@@ -2,13 +2,15 @@ import { spawn } from 'node:child_process'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
+import { logger } from './logger'
 import type { YtdlpFlatEntry } from './types'
 
 /** yt-dlp の起動・実行・出力解析のいずれかが失敗した際に投げる。`stderr` に yt-dlp の生出力を保持する。 */
 export class YtdlpError extends Error {
   constructor(
     message: string,
-    public readonly stderr: string
+    public readonly stderr: string,
+    public readonly code?: string | number
   ) {
     super(message)
     this.name = 'YtdlpError'
@@ -35,6 +37,9 @@ function runYtdlp(
   options: RunYtdlpOptions,
   contextLabel: string
 ): Promise<SpawnResult> {
+  const startedAt = performance.now()
+  const operationId = logger.newOperationId()
+  const [targetType, targetId] = contextLabel.split(' ', 2)
   return new Promise((resolve, reject) => {
     const child = spawn(options.ytdlpPath, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -48,12 +53,20 @@ function runYtdlp(
       if (settled) return
       settled = true
       child.kill('SIGKILL')
-      reject(
-        new YtdlpError(
-          `yt-dlp timed out after ${options.timeoutMs}ms for ${contextLabel}`,
-          stderr
-        )
+      const error = new YtdlpError(
+        `yt-dlp timed out after ${options.timeoutMs}ms for ${contextLabel}`,
+        stderr,
+        'ETIMEDOUT'
       )
+      logger.error('ytdlp.operation.failed', 'yt-dlp operation failed', {
+        operation: 'ytdlp.run',
+        operation_id: operationId,
+        target_type: targetType,
+        target_id: targetId,
+        duration_ms: Math.round(performance.now() - startedAt),
+        error,
+      })
+      reject(error)
     }, options.timeoutMs)
 
     child.stdout.on('data', (chunk: Buffer) => {
@@ -67,12 +80,21 @@ function runYtdlp(
       if (settled) return
       settled = true
       clearTimeout(timer)
-      reject(
-        new YtdlpError(
-          `Failed to spawn yt-dlp (${options.ytdlpPath}): ${err.message}`,
-          stderr
-        )
+      const errorCode = (err as NodeJS.ErrnoException).code
+      const error = new YtdlpError(
+        `Failed to spawn yt-dlp (${options.ytdlpPath}): ${err.message}`,
+        stderr,
+        typeof errorCode === 'string' ? errorCode : undefined
       )
+      logger.error('ytdlp.operation.failed', 'yt-dlp operation failed', {
+        operation: 'ytdlp.run',
+        operation_id: operationId,
+        target_type: targetType,
+        target_id: targetId,
+        duration_ms: Math.round(performance.now() - startedAt),
+        error,
+      })
+      reject(error)
     })
 
     child.on('close', (code) => {
@@ -81,12 +103,20 @@ function runYtdlp(
       clearTimeout(timer)
 
       if (code !== 0) {
-        reject(
-          new YtdlpError(
-            `yt-dlp exited with code ${code} for ${contextLabel}`,
-            stderr
-          )
+        const error = new YtdlpError(
+          `yt-dlp exited with code ${code} for ${contextLabel}`,
+          stderr,
+          code ?? 'unknown'
         )
+        logger.error('ytdlp.operation.failed', 'yt-dlp operation failed', {
+          operation: 'ytdlp.run',
+          operation_id: operationId,
+          target_type: targetType,
+          target_id: targetId,
+          duration_ms: Math.round(performance.now() - startedAt),
+          error,
+        })
+        reject(error)
         return
       }
 

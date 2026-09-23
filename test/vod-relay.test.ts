@@ -6,6 +6,13 @@ import path from 'node:path'
 import { afterEach, beforeEach, test, vi } from 'vitest'
 import type { AppConfig } from '../src/config'
 
+/** JSON ログを object として検証し、field assertion に使える形で返す。 */
+function parseLogRecord(line: string): Record<string, unknown> {
+  const parsed: unknown = JSON.parse(line)
+  assert.ok(parsed && typeof parsed === 'object' && !Array.isArray(parsed))
+  return parsed as Record<string, unknown>
+}
+
 /** 偽 ffmpeg: 最終引数の出力ファイルへ入力ファイルの内容を連結して書き、正常終了する。 */
 const spawnMock = vi.fn((_cmd: string, args: string[]) => {
   const inputs = args.flatMap((a, i) => (args[i - 1] === '-i' ? [a] : []))
@@ -106,6 +113,7 @@ test('parseMediaPlaylist reads the init segment, resolves relative URIs and reje
 test('ensureVodRelay serves a complete VOD playlist (ENDLIST, source durations) without muxing anything yet', async () => {
   const { ensureVodRelay } = await import('../src/vod-relay')
   const outDir = path.join(root, 'testVideo01')
+  const output = vi.spyOn(console, 'log').mockImplementation(() => undefined)
   const result = await ensureVodRelay(
     makeConfig(),
     'testVideo01',
@@ -113,6 +121,15 @@ test('ensureVodRelay serves a complete VOD playlist (ENDLIST, source durations) 
     'https://f.example/master.m3u8'
   )
   assert.ok('outDir' in result)
+  const record = output.mock.calls
+    .map(([line]) => parseLogRecord(line as string))
+    .find((entry) => entry.event === 'relay.vod.preparation.completed')
+  assert.ok(record)
+  assert.equal(record.video_id, 'testVideo01')
+  assert.ok(record.operation_id)
+  assert.equal(record.segment_count, 3)
+  assert.ok(typeof record.duration_ms === 'number' && record.duration_ms >= 0)
+  output.mockRestore()
   const playlist = fs.readFileSync(path.join(outDir, 'live.m3u8'), 'utf8')
   assert.ok(playlist.includes('#EXT-X-PLAYLIST-TYPE:VOD'))
   assert.ok(playlist.includes('#EXT-X-ENDLIST'))
@@ -167,6 +184,7 @@ test('ensureVodRelay returns an error when the video and audio segment counts di
     '#EXTM3U\n#EXTINF:5.0,\nhttps://a.example/only\n'
   const { ensureVodRelay } = await import('../src/vod-relay')
   const outDir = path.join(root, 'testVideo01')
+  const output = vi.spyOn(console, 'error').mockImplementation(() => undefined)
   const result = await ensureVodRelay(
     makeConfig(),
     'testVideo01',
@@ -175,6 +193,17 @@ test('ensureVodRelay returns an error when the video and audio segment counts di
   )
   assert.ok('error' in result)
   assert.ok(!fs.existsSync(outDir))
+  const record = output.mock.calls
+    .map(([line]) => parseLogRecord(line as string))
+    .find((entry) => entry.event === 'relay.vod.preparation.failed')
+  assert.ok(record)
+  assert.equal(record.video_id, 'testVideo01')
+  assert.ok(record.operation_id)
+  assert.ok(typeof record.duration_ms === 'number' && record.duration_ms >= 0)
+  const error = record.error as Record<string, unknown>
+  assert.equal(error.type, 'Error')
+  assert.equal(error.message, 'video and audio segment counts differ')
+  output.mockRestore()
   bodies['https://a.example/audio.m3u8'] = mediaPlaylist('https://a.example/s')
 })
 
