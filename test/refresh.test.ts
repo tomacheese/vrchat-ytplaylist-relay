@@ -132,14 +132,23 @@ test('refreshPlaylist single-flights concurrent calls for the same playlistId', 
   )
 })
 
-test('refreshPlaylist warms only the longest entry in relay mode', async () => {
+test('refreshPlaylist returns before warming every long relay entry', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'yrp-refresh-warmup-test-'))
   const scriptPath = path.join(dir, 'fake-ytdlp.mjs')
   const callsPath = path.join(dir, 'calls.jsonl')
+  const completedPath = path.join(dir, 'completed.jsonl')
+  const releasePath = path.join(dir, 'release')
+  const durations = [14_409, 3600, 3000, 2400, 2100, 1900, 1850, 1800, 1800]
+  const longEntries = durations.map((duration, index) => ({
+    id: `long000000${index}`,
+    title: `Long ${index}`,
+    duration,
+  }))
   const entries = [
     { id: 'short000001', title: 'Short', duration: 120 },
-    { id: 'long0000000', title: 'Long', duration: 14_409 },
+    { id: 'short000002', title: 'Under threshold', duration: 1799 },
     { id: 'unknown0001', title: 'Unknown duration' },
+    ...longEntries,
   ]
   fs.writeFileSync(
     scriptPath,
@@ -150,6 +159,10 @@ fs.appendFileSync(${JSON.stringify(callsPath)}, JSON.stringify(args.at(-1)) + '\
 if (args.includes('--flat-playlist')) {
   process.stdout.write(${JSON.stringify(JSON.stringify({ entries }))})
 } else {
+  while (!fs.existsSync(${JSON.stringify(releasePath)})) {
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  fs.appendFileSync(${JSON.stringify(completedPath)}, JSON.stringify(args.at(-1)) + '\n')
   process.stdout.write(${JSON.stringify(JSON.stringify({ is_live: false, formats: [] }))})
 }
 `
@@ -164,12 +177,80 @@ if (args.includes('--flat-playlist')) {
 
   try {
     const result = await refreshPlaylist(config, 'pl-relay-warmup')
+    const startDeadline = Date.now() + 1000
+    while (
+      fs.readFileSync(callsPath, 'utf8').trim().split('\n').length < 3 &&
+      Date.now() < startDeadline
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    }
     const calls = fs.readFileSync(callsPath, 'utf8')
 
     assert.equal(result.ok, true)
     assert.equal(calls.includes('playlist?list=pl-relay-warmup'), true)
     assert.equal(calls.includes('watch?v=long0000000'), true)
+    assert.equal(calls.includes('watch?v=long0000001'), true)
     assert.equal(calls.includes('watch?v=short000001'), false)
+    assert.equal(calls.includes('watch?v=short000002'), false)
+    assert.equal(fs.existsSync(completedPath), false)
+
+    fs.writeFileSync(releasePath, '')
+    const completionDeadline = Date.now() + 5000
+    while (
+      (!fs.existsSync(completedPath) ||
+        fs.readFileSync(completedPath, 'utf8').trim().split('\n').length < 8) &&
+      Date.now() < completionDeadline
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    }
+    const completed = fs.readFileSync(completedPath, 'utf8')
+    assert.equal(completed.trim().split('\n').length, 8)
+    assert.equal(completed.includes('watch?v=long0000008'), false)
+  } finally {
+    fs.writeFileSync(releasePath, '')
+    const cleanupDeadline = Date.now() + 3000
+    while (
+      (!fs.existsSync(completedPath) ||
+        fs.readFileSync(completedPath, 'utf8').trim().split('\n').length < 8) &&
+      Date.now() < cleanupDeadline
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    }
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('refreshPlaylist can skip relay warm-ups for short-lived CLI refreshes', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'yrp-refresh-cli-test-'))
+  const scriptPath = path.join(dir, 'fake-ytdlp.mjs')
+  const callsPath = path.join(dir, 'calls.jsonl')
+  fs.writeFileSync(
+    scriptPath,
+    String.raw`#!/usr/bin/env node
+import fs from 'node:fs'
+const args = process.argv.slice(2)
+fs.appendFileSync(${JSON.stringify(callsPath)}, JSON.stringify(args.at(-1)) + '\n')
+if (args.includes('--flat-playlist')) {
+  process.stdout.write(${JSON.stringify(JSON.stringify({ entries: [{ id: 'long000001', title: 'Long', duration: 3600 }] }))})
+}
+`
+  )
+  fs.chmodSync(scriptPath, 0o755)
+  const config = baseConfig('pl-cli-refresh', {
+    dataDir: dir,
+    ytdlpPath: scriptPath,
+    mediaDeliveryMode: 'relay',
+  })
+
+  try {
+    const result = await refreshPlaylist(config, 'pl-cli-refresh', {
+      warmRelayVideos: false,
+    })
+
+    assert.equal(result.ok, true)
+    assert.deepEqual(fs.readFileSync(callsPath, 'utf8').trim().split('\n'), [
+      '"https://www.youtube.com/playlist?list=pl-cli-refresh"',
+    ])
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }
