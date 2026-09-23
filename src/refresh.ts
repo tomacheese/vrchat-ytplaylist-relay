@@ -2,6 +2,7 @@ import type { AppConfig } from './config'
 import { isPlaylistAllowed, maxSlotsFor } from './config'
 import { logger } from './logger'
 import { KeyedMutex } from './lock'
+import { resolveVideoInfo } from './live-resolve'
 import { prefetchAll } from './media-cache'
 import {
   buildManifest,
@@ -14,6 +15,13 @@ import type { Manifest } from './types'
 import { fetchPlaylistEntries, YtdlpError } from './ytdlp'
 
 const refreshMutex = new KeyedMutex()
+const relayWarmupMinDurationSeconds = 30 * 60
+const relayWarmupConcurrency = 2
+const relayWarmupLimitPerPlaylist = 8
+const relayWarmupQueueLimit = 32
+const relayWarmupQueue: { playlistId: string; videoId: string }[] = []
+const scheduledRelayWarmups = new Set<string>()
+let activeRelayWarmups = 0
 
 /**
  * playlistId ごとの実行中 Refresh を single-flight にするための Map。
@@ -32,6 +40,62 @@ interface CacheEntry {
 /** メモリ上の Manifest キャッシュ。Process 再起動でクリアされる。 */
 const manifestCache = new Map<string, CacheEntry>()
 
+function startRelayWarmups(config: AppConfig): void {
+  while (
+    activeRelayWarmups < relayWarmupConcurrency &&
+    relayWarmupQueue.length > 0
+  ) {
+    const warmup = relayWarmupQueue.shift()
+    if (!warmup) return
+    activeRelayWarmups += 1
+    const finishWarmup = () => {
+      scheduledRelayWarmups.delete(warmup.videoId)
+      activeRelayWarmups -= 1
+      startRelayWarmups(config)
+    }
+    resolveVideoInfo(warmup.videoId, {
+      ytdlpPath: config.ytdlpPath,
+      timeoutMs: config.ytdlpTimeoutMs,
+      cacheTtlMs: config.manifestCacheTtlMs,
+    }).then(finishWarmup, (err: unknown) => {
+      logger.warn(
+        `relay warm-up failed for ${warmup.playlistId}/${warmup.videoId}: ${(err as Error).message}`
+      )
+      finishWarmup()
+    })
+  }
+}
+
+function scheduleRelayWarmups(
+  config: AppConfig,
+  playlistId: string,
+  entries: Awaited<ReturnType<typeof fetchPlaylistEntries>>
+): void {
+  const longEntries = entries
+    .filter(
+      (entry) =>
+        typeof entry.duration === 'number' &&
+        Number.isFinite(entry.duration) &&
+        entry.duration >= relayWarmupMinDurationSeconds
+    )
+    .toSorted((a, b) => (b.duration ?? 0) - (a.duration ?? 0))
+    .slice(0, relayWarmupLimitPerPlaylist)
+
+  for (const entry of longEntries) {
+    if (scheduledRelayWarmups.has(entry.id)) continue
+    if (relayWarmupQueue.length >= relayWarmupQueueLimit) {
+      logger.warn(
+        `relay warm-up queue is full; skipping ${playlistId}/${entry.id}`
+      )
+      continue
+    }
+    scheduledRelayWarmups.add(entry.id)
+    relayWarmupQueue.push({ playlistId, videoId: entry.id })
+  }
+
+  startRelayWarmups(config)
+}
+
 /** 1 Playlist の Refresh 結果。`ok: false` の場合は `error` に失敗理由が入る。 */
 export interface RefreshResult {
   playlistId: string
@@ -44,7 +108,8 @@ export interface RefreshResult {
 /** {@link refreshPlaylist} の実処理本体 (single-flight の Map 管理から分離)。 */
 function runRefresh(
   config: AppConfig,
-  playlistId: string
+  playlistId: string,
+  warmRelayVideos: boolean
 ): Promise<RefreshResult> {
   return refreshMutex.run(playlistId, async () => {
     const maxSlots = maxSlotsFor(config, playlistId)
@@ -84,6 +149,8 @@ function runRefresh(
             `prefetch failed for ${playlistId}: ${(err as Error).message}`
           )
         })
+      } else if (warmRelayVideos && config.mediaDeliveryMode === 'relay') {
+        scheduleRelayWarmups(config, playlistId, entries)
       }
 
       return {
@@ -114,7 +181,8 @@ function runRefresh(
  */
 export async function refreshPlaylist(
   config: AppConfig,
-  playlistId: string
+  playlistId: string,
+  options: { warmRelayVideos?: boolean } = {}
 ): Promise<RefreshResult> {
   if (!isPlaylistAllowed(config, playlistId)) {
     return { playlistId, ok: false, error: `Unknown playlistId: ${playlistId}` }
@@ -123,7 +191,11 @@ export async function refreshPlaylist(
   const inFlight = inFlightRefreshes.get(playlistId)
   if (inFlight) return inFlight
 
-  const promise = runRefresh(config, playlistId).finally(() => {
+  const promise = runRefresh(
+    config,
+    playlistId,
+    options.warmRelayVideos ?? true
+  ).finally(() => {
     inFlightRefreshes.delete(playlistId)
   })
   inFlightRefreshes.set(playlistId, promise)
@@ -149,11 +221,14 @@ function refreshAllTargets(config: AppConfig): string[] {
  * 1 件の失敗は他の Playlist の Refresh を妨げない。
  * `/admin/refresh` (キャッシュ強制無効化・再取得用) と CLI から使う。
  */
-export async function refreshAll(config: AppConfig): Promise<RefreshResult[]> {
+export async function refreshAll(
+  config: AppConfig,
+  options: { warmRelayVideos?: boolean } = {}
+): Promise<RefreshResult[]> {
   const results: RefreshResult[] = []
   for (const playlistId of refreshAllTargets(config)) {
     // 直列実行にする: yt-dlp を同時に何本も立てて YouTube 側のレート制限を踏むのを避ける。
-    results.push(await refreshPlaylist(config, playlistId))
+    results.push(await refreshPlaylist(config, playlistId, options))
   }
   return results
 }

@@ -22,19 +22,19 @@ afterEach(() => {
  */
 function makeFakeYtdlp(
   dir: string,
-  options: { json?: unknown; failMessage?: string }
+  options: { json?: unknown; failMessage?: string; delayMs?: number }
 ): { scriptPath: string; countPath: string } {
   const scriptPath = path.join(dir, `fake-ytdlp-${crypto.randomUUID()}.mjs`)
   const countPath = `${scriptPath}.count`
   fs.writeFileSync(countPath, '0')
-  // 分岐部分は別途 String.raw で組み立ててから埋め込む。外側の String.raw の `${}` に通常の
-  // テンプレートリテラルをネストすると、そちらの `\n` は生成時に実改行へ展開されてしまい
-  // (String.raw は外側のリテラルにしか効かない)、生成後の子スクリプトの文字列リテラルが
-  // 生の改行を含んで壊れる (SyntaxError) ため、分岐側も String.raw で統一する。
+  // 失敗分岐の String.raw は、生成する子スクリプト内の `\n` を保持するために使う。
+  const delay = options.delayMs
+    ? `await new Promise((resolve) => setTimeout(resolve, ${options.delayMs}))\n`
+    : ''
   const body = options.failMessage
-    ? String.raw`process.stderr.write(${JSON.stringify(options.failMessage)} + '\n')
-process.exit(1)`
-    : `process.stdout.write(${JSON.stringify(JSON.stringify(options.json ?? {}))})`
+    ? `${delay}${String.raw`process.stderr.write(${JSON.stringify(options.failMessage)} + '\n')
+process.exit(1)`}`
+    : `${delay}process.stdout.write(${JSON.stringify(JSON.stringify(options.json ?? {}))})`
   fs.writeFileSync(
     scriptPath,
     `#!/usr/bin/env node
@@ -69,6 +69,26 @@ test('resolveVideoInfo runs yt-dlp only once for repeated calls within the cache
     timeoutMs: 5000,
     cacheTtlMs: 60_000,
   })
+
+  assert.equal(readAttemptCount(countPath), 1)
+})
+
+test('resolveVideoInfo shares an in-flight yt-dlp lookup for concurrent calls', async () => {
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yrp-live-resolve-test-'))
+  const { scriptPath, countPath } = makeFakeYtdlp(tmpDir, {
+    json: { is_live: false, formats: [] },
+    delayMs: 100,
+  })
+
+  await Promise.all(
+    Array.from({ length: 5 }, () =>
+      resolveVideoInfo('v1', {
+        ytdlpPath: scriptPath,
+        timeoutMs: 5000,
+        cacheTtlMs: 60_000,
+      })
+    )
+  )
 
   assert.equal(readAttemptCount(countPath), 1)
 })

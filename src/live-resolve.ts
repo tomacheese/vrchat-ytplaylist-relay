@@ -29,6 +29,7 @@ interface CacheEntry {
  * TTL 内は yt-dlp を再実行しない (モード混在時に高頻度アクセスされる position での yt-dlp 負荷を抑えるため)。
  */
 const resolveCache = new Map<string, CacheEntry>()
+const inFlightResolutions = new Map<string, Promise<ResolvedVideoInfo>>()
 
 /** yt-dlp -j の JSON 出力から Live 判定に必要な最小限のフィールドのみを受け取る型。 */
 interface YtdlpVideoJson {
@@ -144,19 +145,33 @@ export async function resolveVideoInfo(
     return cached.info
   }
 
-  const raw = (await resolveVideoJson(videoId, options)) as YtdlpVideoJson
-  const isLive = raw.is_live === true
-  const hls = extractHlsMasterManifestUrl(videoId, raw.formats, isLive)
-  const info: ResolvedVideoInfo = {
-    isLive,
-    hlsMasterManifestUrl: hls.url,
-    hlsIsMaster: hls.isMaster,
+  const inFlight = inFlightResolutions.get(videoId)
+  if (inFlight) return inFlight
+
+  const promise = (async () => {
+    const raw = (await resolveVideoJson(videoId, options)) as YtdlpVideoJson
+    const isLive = raw.is_live === true
+    const hls = extractHlsMasterManifestUrl(videoId, raw.formats, isLive)
+    const info: ResolvedVideoInfo = {
+      isLive,
+      hlsMasterManifestUrl: hls.url,
+      hlsIsMaster: hls.isMaster,
+    }
+    resolveCache.set(videoId, { info, fetchedAt: Date.now() })
+    return info
+  })()
+  inFlightResolutions.set(videoId, promise)
+  try {
+    return await promise
+  } finally {
+    if (inFlightResolutions.get(videoId) === promise) {
+      inFlightResolutions.delete(videoId)
+    }
   }
-  resolveCache.set(videoId, { info, fetchedAt: Date.now() })
-  return info
 }
 
 /** テスト用: キャッシュを空にする。 */
 export function clearResolveCache(): void {
   resolveCache.clear()
+  inFlightResolutions.clear()
 }

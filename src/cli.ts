@@ -28,13 +28,15 @@ async function main() {
   const config = loadConfig()
 
   if (playlistId) {
-    const result = await refreshPlaylist(config, playlistId)
+    const result = await refreshPlaylist(config, playlistId, {
+      warmRelayVideos: false,
+    })
     logger.info(JSON.stringify(result))
     process.exitCode = result.ok ? 0 : 1
     return
   }
 
-  const results = await refreshAll(config)
+  const results = await refreshAll(config, { warmRelayVideos: false })
   logger.info(JSON.stringify(results))
   process.exitCode = results.every((r) => r.ok) ? 0 : 1
 }
