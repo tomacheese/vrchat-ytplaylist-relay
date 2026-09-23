@@ -2,6 +2,7 @@ import type { AppConfig } from './config'
 import { isPlaylistAllowed, maxSlotsFor } from './config'
 import { logger } from './logger'
 import { KeyedMutex } from './lock'
+import { resolveVideoInfo } from './live-resolve'
 import { prefetchAll } from './media-cache'
 import {
   buildManifest,
@@ -84,6 +85,31 @@ function runRefresh(
             `prefetch failed for ${playlistId}: ${(err as Error).message}`
           )
         })
+      } else if (config.mediaDeliveryMode === 'relay') {
+        const longestEntry = entries.reduce<(typeof entries)[number] | null>(
+          (longest, entry) =>
+            typeof entry.duration === 'number' &&
+            Number.isFinite(entry.duration) &&
+            (longest === null ||
+              entry.duration > (longest.duration ?? -Infinity))
+              ? entry
+              : longest,
+          null
+        )
+        if (longestEntry) {
+          try {
+            // Manifest 取得後すぐに再生しても解決待ちにならないよう、ここで完了を待つ。
+            await resolveVideoInfo(longestEntry.id, {
+              ytdlpPath: config.ytdlpPath,
+              timeoutMs: config.ytdlpTimeoutMs,
+              cacheTtlMs: config.manifestCacheTtlMs,
+            })
+          } catch (err) {
+            logger.warn(
+              `relay warm-up failed for ${longestEntry.id}: ${(err as Error).message}`
+            )
+          }
+        }
       }
 
       return {

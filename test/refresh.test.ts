@@ -132,6 +132,49 @@ test('refreshPlaylist single-flights concurrent calls for the same playlistId', 
   )
 })
 
+test('refreshPlaylist warms only the longest entry in relay mode', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'yrp-refresh-warmup-test-'))
+  const scriptPath = path.join(dir, 'fake-ytdlp.mjs')
+  const callsPath = path.join(dir, 'calls.jsonl')
+  const entries = [
+    { id: 'short000001', title: 'Short', duration: 120 },
+    { id: 'long0000000', title: 'Long', duration: 14_409 },
+    { id: 'unknown0001', title: 'Unknown duration' },
+  ]
+  fs.writeFileSync(
+    scriptPath,
+    String.raw`#!/usr/bin/env node
+import fs from 'node:fs'
+const args = process.argv.slice(2)
+fs.appendFileSync(${JSON.stringify(callsPath)}, JSON.stringify(args.at(-1)) + '\n')
+if (args.includes('--flat-playlist')) {
+  process.stdout.write(${JSON.stringify(JSON.stringify({ entries }))})
+} else {
+  process.stdout.write(${JSON.stringify(JSON.stringify({ is_live: false, formats: [] }))})
+}
+`
+  )
+  fs.chmodSync(scriptPath, 0o755)
+  const config = baseConfig('pl-relay-warmup', {
+    dataDir: dir,
+    ytdlpPath: scriptPath,
+    ytdlpTimeoutMs: 5000,
+    mediaDeliveryMode: 'relay',
+  })
+
+  try {
+    const result = await refreshPlaylist(config, 'pl-relay-warmup')
+    const calls = fs.readFileSync(callsPath, 'utf8')
+
+    assert.equal(result.ok, true)
+    assert.equal(calls.includes('playlist?list=pl-relay-warmup'), true)
+    assert.equal(calls.includes('watch?v=long0000000'), true)
+    assert.equal(calls.includes('watch?v=short000001'), false)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('resolveVideoIdForPosition triggers a refresh when slot state does not exist yet', async () => {
   const config = baseConfig('pl-cold-start')
 
