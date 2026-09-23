@@ -36,12 +36,13 @@ Nginx 等のリバースプロキシ配下で稼働させる場合、Express の
 Live (配信中) かで別々の環境変数から選ばれる。VOD は `MEDIA_DELIVERY_MODE`、Live は
 `LIVE_DELIVERY_MODE` で切り替える (両方とも未設定なら従来通り `redirect`)。
 
-| 値 | 挙動 | VOD | Live | 追加要件 |
-|---|---|---|---|---|
-| `redirect` (既定) | `https://www.youtube.com/watch?v=<videoId>` へ 302 Redirect | ✅ | ✅ | なし |
-| `relay` | Backend 自身の yt-dlp が解決した HLS manifest URL へ 302 Redirect (音声込みの AVC1 variant を優先選択)。VOD で音声込みの単一 variant が無い場合は、再生範囲の segment を ffmpeg で 1 個ずつ AVC1 + 音声の MPEG-TS に多重化して配信 (再エンコードなし、視聴分のみ一時保存) | ✅ | ✅ | 単一 variant があればなし。無い VOD は ffmpeg、ディスク容量 |
-| `proxy` | VOD: yt-dlp + ffmpeg でダウンロード・キャッシュしバイト列を直接配信。Live: ffmpeg で HLS をローカル再公開し配信 | ✅ | ✅ | ffmpeg、ディスク容量 |
-| `hybrid` | キャッシュ済みなら `proxy` と同様に配信、未キャッシュなら裏でダウンロードを開始しつつ `relay` 相当の応答を返す (解決失敗、および VOD の多重化の準備に失敗した場合は `redirect`) | ✅ | ❌ (起動時エラー) | ffmpeg、ディスク容量 |
+| 値                | 挙動                                                                                                                                                                                                                                                                      | VOD | Live              | 追加要件                                                    |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --- | ----------------- | ----------------------------------------------------------- |
+| `redirect` (既定) | `https://www.youtube.com/watch?v=<videoId>` へ 302 Redirect                                                                                                                                                                                                               | ✅  | ✅                | なし                                                        |
+| `relay`           | Backend 自身の yt-dlp が解決した HLS manifest URL へ 302 Redirect (音声込みの AVC1 variant を優先選択)。VOD で音声込みの単一 variant が無い場合は、再生範囲の segment を ffmpeg で 1 個ずつ AVC1 + 音声の MPEG-TS に多重化して配信 (再エンコードなし、視聴分のみ一時保存) | ✅  | ✅                | 単一 variant があればなし。無い VOD は ffmpeg、ディスク容量 |
+| `relay-redirect`  | `relay` を試し、解決・relay 準備が失敗して 502 になる場合は YouTube watch URL へ 302 Redirect。proxy の動画ダウンロード・キャッシュは行わない                                                                                                                             | ✅  | ✅                | relay と同じ                                                |
+| `proxy`           | VOD: yt-dlp + ffmpeg でダウンロード・キャッシュしバイト列を直接配信。Live: ffmpeg で HLS をローカル再公開し配信                                                                                                                                                           | ✅  | ✅                | ffmpeg、ディスク容量                                        |
+| `hybrid`          | キャッシュ済みなら `proxy` と同様に配信、未キャッシュなら裏でダウンロードを開始しつつ `relay` 相当の応答を返す (解決失敗、および VOD の多重化の準備に失敗した場合は `redirect`)                                                                                           | ✅  | ❌ (起動時エラー) | ffmpeg、ディスク容量                                        |
 
 `redirect` は VRChat 同梱の制限付き yt-dlp (`Tools/yt-dlp.exe`) が googlevideo.com への
 直リンク解決に失敗し 403 になることがある既知の問題を抱える。`relay` は Backend 自身の
@@ -54,6 +55,11 @@ Live (配信中) かで別々の環境変数から選ばれる。VOD は `MEDIA_
 キャッシュが出来ていて `proxy` 相当の配信に切り替わる想定の折衷案。`proxy` / `hybrid` は
 いずれも YouTube 動画データを Backend にダウンロード・再配信するため、利用規約上のリスクを
 運用者が許容していることが前提。
+
+`relay-redirect` は relay で応答を作れない場合の代替として YouTube URL を返す。302 を返した後に
+YouTube または Client 側で発生するエラーは検出できないため、fallback の対象外。
+resolver failure では VOD/Live の判別前に fallback するため、どちらか一方で `relay-redirect` を使う場合、
+もう一方は `redirect` にする (両方を `relay-redirect` にする設定も可能)。
 
 VOD の `proxy` / `hybrid` はいずれも、キャッシュが `MEDIA_CACHE_TTL_MS` を超えて再ダウンロードが走っている間も、直前まで有効だった完了済みキャッシュファイルを Seek 可能な状態のまま配信し続ける (stale-while-revalidate)。
 `proxy` はブロックせず、`hybrid` は redirect フォールバックせずに即座に配信し、再ダウンロードが完了すると次回以降のリクエストから新しいファイルに切り替わる。

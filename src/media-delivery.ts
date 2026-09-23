@@ -135,21 +135,25 @@ function serveRelay(
   liveProxyTarget: LiveProxyTarget,
   info: ResolvedVideoInfo,
   res: Response,
-  onRemuxFailure?: () => void
+  onRelayFailure?: () => void
 ): void {
   if (!info.hlsMasterManifestUrl) {
+    if (onRelayFailure) {
+      onRelayFailure()
+      return
+    }
     res.status(502).json({ error: 'failed to resolve HLS manifest' })
     return
   }
   if (info.hlsIsMaster && !info.isLive) {
-    serveLiveProxy(config, videoId, liveProxyTarget, res, onRemuxFailure)
+    serveLiveProxy(config, videoId, liveProxyTarget, res, onRelayFailure)
     return
   }
   res.redirect(302, info.hlsMasterManifestUrl)
 }
 
 /**
- * videoId に対して config の配信方式判定 (redirect/relay/proxy/hybrid, VOD/Live 判定込み) を行い、
+ * videoId に対して config の配信方式判定 (redirect/relay/relay-redirect/proxy/hybrid, VOD/Live 判定込み) を行い、
  * レスポンスを直接書き込む。`src/routes/media.ts` (Playlist/position 経由) と
  * `src/routes/video.ts` (videoId 直接指定) の両方から呼ばれる共有処理。
  *
@@ -161,6 +165,7 @@ function serveRelay(
  *   単一 variant が無い場合、Live は YouTube 生の master manifest URL へ 302 Redirect する。
  *   VOD は音声が別 rendition で AVPro が無音になるため、segment 単位で音声込みの MPEG-TS に多重化して配信する
  *   (Live "proxy" と同じ再公開経路。単一 variant がある場合はステートレスな 302 のみ)。
+ * - "relay-redirect": "relay" を試し、解決または relay 準備が失敗した場合は YouTube watch URL へ 302 Redirect する。
  * - "proxy" (VOD): Backend 自身が yt-dlp で動画をダウンロード・キャッシュし (media-cache.ts)、
  *   バイト列を直接配信する。ダウンロード完了まで応答をブロックするため、Client 側の Timeout に
  *   間に合わないことがある。
@@ -230,6 +235,15 @@ export function resolveAndServe(
           serveRelay(config, videoId, liveProxyTarget, info, res)
           return
         }
+        case 'relay-redirect': {
+          serveRelay(config, videoId, liveProxyTarget, info, res, () => {
+            logger.warn(
+              `relay failed for video ${videoId}; falling back to YouTube redirect`
+            )
+            redirectToYoutube(res, videoId)
+          })
+          return
+        }
         case 'proxy': {
           if (info.isLive) {
             serveLiveProxy(config, videoId, liveProxyTarget, res)
@@ -258,6 +272,19 @@ export function resolveAndServe(
       }
     })
     .catch((err: unknown) => {
+      if (
+        config.mediaDeliveryMode === 'relay-redirect' ||
+        config.liveDeliveryMode === 'relay-redirect'
+      ) {
+        if (err instanceof YtdlpError && err.stderr.length > 0) {
+          logger.error(err.stderr)
+        }
+        logger.warn(
+          `relay resolution failed for video ${videoId}; falling back to YouTube redirect`
+        )
+        redirectToYoutube(res, videoId)
+        return
+      }
       res.status(502).json({
         error: `failed to resolve position: ${(err as Error).message}`,
       })
