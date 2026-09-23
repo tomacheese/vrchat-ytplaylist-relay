@@ -17,6 +17,7 @@ export interface AppConfig {
   /**
    * Media Endpoint (`GET /:playlistId/:position.mp4`) の配信方式。
    * - "redirect": 従来通り youtube.com へ 302 Redirect するだけ (既定値)。
+   * - "relay-redirect": relay を試し、relay が 502 になる場合は youtube.com へ 302 Redirect する。
    * - "proxy": Backend 自身が yt-dlp で動画をダウンロード・キャッシュし、バイト列を直接配信する。
    *   VRChat 同梱の制限付き yt-dlp が googlevideo.com への直リンク解決に失敗する問題を回避できるが、
    *   ffmpeg / 十分なディスク容量が必要になる。ダウンロード完了まで応答をブロックするため、
@@ -28,13 +29,15 @@ export interface AppConfig {
    * - "relay": Backend が yt-dlp で解決した HLS master manifest URL へ 302 Redirect する。
    *   ffmpeg・ディスクキャッシュを使わないステートレスな配信方式 (Live 動画にも共通で使える)。
    */
-  mediaDeliveryMode: 'redirect' | 'relay' | 'proxy' | 'hybrid'
+  mediaDeliveryMode:
+    'redirect' | 'relay' | 'relay-redirect' | 'proxy' | 'hybrid'
   /**
    * Live (配信中) 動画向けの `GET /:playlistId/:position.mp4` 配信方式。
    * `mediaDeliveryMode` と独立して設定でき、VOD/Live で異なる方式を選べる。
+   * `relay-redirect` を片方に指定する場合、もう片方は `redirect` か `relay-redirect` にする。
    * `hybrid` は Live 未対応のため指定不可 (起動時エラー)。既定値は "redirect" (現状維持)。
    */
-  liveDeliveryMode: 'redirect' | 'relay' | 'proxy'
+  liveDeliveryMode: 'redirect' | 'relay' | 'relay-redirect' | 'proxy'
   /** Live `proxy` モードで ffmpeg が HLS 再公開ファイル (playlist + segment) を書き出すディレクトリ。 */
   liveRelayOutDir: string
   /**
@@ -108,7 +111,7 @@ function readServerConfig(configPath: string): ServerConfig {
 
 function readMediaDeliveryMode(
   overrides: Partial<AppConfig>
-): 'redirect' | 'relay' | 'proxy' | 'hybrid' {
+): 'redirect' | 'relay' | 'relay-redirect' | 'proxy' | 'hybrid' {
   const raw =
     overrides.mediaDeliveryMode ??
     // 空文字列 ("MEDIA_DELIVERY_MODE=" のような未設定相当の指定) も既定値扱いにするため || を使う。
@@ -117,11 +120,12 @@ function readMediaDeliveryMode(
   if (
     raw !== 'redirect' &&
     raw !== 'relay' &&
+    raw !== 'relay-redirect' &&
     raw !== 'proxy' &&
     raw !== 'hybrid'
   ) {
     throw new Error(
-      `MEDIA_DELIVERY_MODE must be "redirect", "relay", "proxy" or "hybrid" (got: ${raw})`
+      `MEDIA_DELIVERY_MODE must be "redirect", "relay", "relay-redirect", "proxy" or "hybrid" (got: ${raw})`
     )
   }
   return raw
@@ -129,15 +133,20 @@ function readMediaDeliveryMode(
 
 function readLiveDeliveryMode(
   overrides: Partial<AppConfig>
-): 'redirect' | 'relay' | 'proxy' {
+): 'redirect' | 'relay' | 'relay-redirect' | 'proxy' {
   const raw =
     overrides.liveDeliveryMode ??
     // 空文字列 ("LIVE_DELIVERY_MODE=" のような未設定相当の指定) も既定値扱いにするため || を使う。
     // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing
     (process.env.LIVE_DELIVERY_MODE?.trim() || 'redirect')
-  if (raw !== 'redirect' && raw !== 'relay' && raw !== 'proxy') {
+  if (
+    raw !== 'redirect' &&
+    raw !== 'relay' &&
+    raw !== 'relay-redirect' &&
+    raw !== 'proxy'
+  ) {
     throw new Error(
-      `LIVE_DELIVERY_MODE must be "redirect", "relay" or "proxy" (got: ${raw})`
+      `LIVE_DELIVERY_MODE must be "redirect", "relay", "relay-redirect" or "proxy" (got: ${raw})`
     )
   }
   return raw
@@ -148,6 +157,21 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     overrides.configPath ?? process.env.CONFIG_PATH ?? './config/playlists.json'
   const resolvedConfigPath = path.resolve(configPath)
   const serverConfig = readServerConfig(resolvedConfigPath)
+  const mediaDeliveryMode = readMediaDeliveryMode(overrides)
+  const liveDeliveryMode = readLiveDeliveryMode(overrides)
+
+  if (
+    (mediaDeliveryMode === 'relay-redirect' &&
+      liveDeliveryMode !== 'redirect' &&
+      liveDeliveryMode !== 'relay-redirect') ||
+    (liveDeliveryMode === 'relay-redirect' &&
+      mediaDeliveryMode !== 'redirect' &&
+      mediaDeliveryMode !== 'relay-redirect')
+  ) {
+    throw new Error(
+      'MEDIA_DELIVERY_MODE and LIVE_DELIVERY_MODE must both be "redirect" or "relay-redirect" when either uses "relay-redirect"'
+    )
+  }
 
   return {
     port: overrides.port ?? Number(process.env.PORT ?? 8787),
@@ -170,8 +194,8 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     manifestCacheTtlMs:
       overrides.manifestCacheTtlMs ??
       Number(process.env.MANIFEST_CACHE_TTL_MS ?? 300_000),
-    mediaDeliveryMode: readMediaDeliveryMode(overrides),
-    liveDeliveryMode: readLiveDeliveryMode(overrides),
+    mediaDeliveryMode,
+    liveDeliveryMode,
     liveRelayOutDir: path.resolve(
       overrides.liveRelayOutDir ??
         process.env.LIVE_RELAY_OUT_DIR ??

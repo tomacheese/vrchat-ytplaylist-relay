@@ -111,6 +111,16 @@ test('loadConfig accepts "relay" as a valid mediaDeliveryMode', () => {
   assert.equal(config.mediaDeliveryMode, 'relay')
 })
 
+test('loadConfig accepts "relay-redirect" as a valid mediaDeliveryMode', () => {
+  const config = loadConfig({
+    configPath: path.join(os.tmpdir(), 'yrp-config-test-unused.json'),
+    playlists: [],
+    mediaDeliveryMode: 'relay-redirect',
+  })
+
+  assert.equal(config.mediaDeliveryMode, 'relay-redirect')
+})
+
 test('loadConfig rejects an invalid mediaDeliveryMode', () => {
   assert.throws(() => {
     loadConfig({
@@ -144,6 +154,29 @@ test('loadConfig accepts "relay" and "proxy" as valid liveDeliveryMode values', 
     liveDeliveryMode: 'proxy',
   })
   assert.equal(proxyConfig.liveDeliveryMode, 'proxy')
+})
+
+test('loadConfig accepts "relay-redirect" as a valid liveDeliveryMode', () => {
+  const config = loadConfig({
+    configPath: path.join(os.tmpdir(), 'yrp-config-test-unused.json'),
+    playlists: [],
+    liveDeliveryMode: 'relay-redirect',
+  })
+
+  assert.equal(config.liveDeliveryMode, 'relay-redirect')
+})
+
+test('loadConfig rejects relay-redirect combined with a non-redirect mode', () => {
+  assert.throws(
+    () =>
+      loadConfig({
+        configPath: path.join(os.tmpdir(), 'yrp-config-test-unused.json'),
+        playlists: [],
+        mediaDeliveryMode: 'proxy',
+        liveDeliveryMode: 'relay-redirect',
+      }),
+    /MEDIA_DELIVERY_MODE and LIVE_DELIVERY_MODE/
+  )
 })
 
 test('loadConfig rejects "hybrid" as a liveDeliveryMode', () => {

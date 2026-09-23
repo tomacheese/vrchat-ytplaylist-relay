@@ -117,6 +117,34 @@ afterAll(async () => {
   fs.rmSync(dataDir, { recursive: true, force: true })
 })
 
+async function requestPositionWithModes(
+  mediaDeliveryMode: AppConfig['mediaDeliveryMode'],
+  liveDeliveryMode: AppConfig['liveDeliveryMode'],
+  overrides: Partial<Pick<AppConfig, 'mediaCacheDir' | 'ytdlpPath'>> = {}
+): Promise<{ status: number; location: string | null }> {
+  const previousMediaMode = config.mediaDeliveryMode
+  const previousLiveMode = config.liveDeliveryMode
+  const previousMediaCacheDir = config.mediaCacheDir
+  const previousYtdlpPath = config.ytdlpPath
+  config.mediaDeliveryMode = mediaDeliveryMode
+  config.liveDeliveryMode = liveDeliveryMode
+  config.mediaCacheDir = overrides.mediaCacheDir ?? previousMediaCacheDir
+  config.ytdlpPath = overrides.ytdlpPath ?? previousYtdlpPath
+
+  try {
+    const response = await fetch(`${baseUrl}/pl1/0.mp4`, { redirect: 'manual' })
+    return {
+      status: response.status,
+      location: response.headers.get('location'),
+    }
+  } finally {
+    config.mediaDeliveryMode = previousMediaMode
+    config.liveDeliveryMode = previousLiveMode
+    config.mediaCacheDir = previousMediaCacheDir
+    config.ytdlpPath = previousYtdlpPath
+  }
+}
+
 test('req.ip reflects X-Forwarded-For when trust proxy is configured', async () => {
   const res = await fetch(`${baseUrl}/__test-ip`, {
     headers: { 'X-Forwarded-For': '203.0.113.1' },
@@ -537,6 +565,87 @@ test('GET /:playlistId/:position.mp4 in relay mode returns 502 when the HLS mani
     }
     fs.rmSync(relayDataDir, { recursive: true, force: true })
   }
+})
+
+test('relay-redirect falls back to YouTube when video resolution rejects', async () => {
+  vi.mocked(resolveVideoInfo).mockRejectedValue(new Error('video unavailable'))
+
+  const response = await requestPositionWithModes('relay-redirect', 'redirect')
+
+  assert.equal(response.status, 302)
+  assert.equal(response.location, 'https://www.youtube.com/watch?v=v1')
+})
+
+test('live relay-redirect falls back to YouTube when video resolution rejects', async () => {
+  vi.mocked(resolveVideoInfo).mockRejectedValue(new Error('video unavailable'))
+
+  const response = await requestPositionWithModes('redirect', 'relay-redirect')
+
+  assert.equal(response.status, 302)
+  assert.equal(response.location, 'https://www.youtube.com/watch?v=v1')
+})
+
+test('relay-redirect falls back to YouTube when the HLS manifest is missing', async () => {
+  vi.mocked(resolveVideoInfo).mockResolvedValue({
+    isLive: false,
+    hlsMasterManifestUrl: null,
+    hlsIsMaster: false,
+  })
+
+  const response = await requestPositionWithModes('relay-redirect', 'redirect')
+
+  assert.equal(response.status, 302)
+  assert.equal(response.location, 'https://www.youtube.com/watch?v=v1')
+})
+
+test('relay-redirect preserves the relay URL when resolution succeeds', async () => {
+  vi.mocked(resolveVideoInfo).mockResolvedValue({
+    isLive: false,
+    hlsMasterManifestUrl: 'https://manifest.googlevideo.com/v1/master.m3u8',
+    hlsIsMaster: false,
+  })
+
+  const cacheDir = path.join(dataDir, 'relay-redirect-cache')
+  const response = await requestPositionWithModes(
+    'relay-redirect',
+    'redirect',
+    { mediaCacheDir: cacheDir, ytdlpPath: 'yt-dlp-does-not-exist' }
+  )
+  await new Promise((resolve) => setTimeout(resolve, 50))
+
+  assert.equal(response.status, 302)
+  assert.equal(
+    response.location,
+    'https://manifest.googlevideo.com/v1/master.m3u8'
+  )
+  assert.equal(fs.existsSync(cacheDir), false)
+})
+
+test('relay-redirect falls back to YouTube when VOD relay preparation fails', async () => {
+  vi.mocked(resolveVideoInfo).mockResolvedValue({
+    isLive: false,
+    hlsMasterManifestUrl: 'https://manifest.googlevideo.com/v1/master.m3u8',
+    hlsIsMaster: true,
+  })
+  vi.mocked(ensureLiveRelay).mockResolvedValue({ error: 'relay unavailable' })
+
+  const response = await requestPositionWithModes('relay-redirect', 'redirect')
+
+  assert.equal(response.status, 302)
+  assert.equal(response.location, 'https://www.youtube.com/watch?v=v1')
+})
+
+test('live relay-redirect falls back to YouTube when the HLS manifest is missing', async () => {
+  vi.mocked(resolveVideoInfo).mockResolvedValue({
+    isLive: true,
+    hlsMasterManifestUrl: null,
+    hlsIsMaster: false,
+  })
+
+  const response = await requestPositionWithModes('redirect', 'relay-redirect')
+
+  assert.equal(response.status, 302)
+  assert.equal(response.location, 'https://www.youtube.com/watch?v=v1')
 })
 
 test('GET /:playlistId/:position.mp4 in hybrid mode falls back to a relay redirect (not youtube.com) when the manifest resolves', async () => {
