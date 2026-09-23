@@ -106,11 +106,15 @@ function runEviction(cacheDir: string, maxBytes: number): void {
       fs.rmSync(cacheFilePath(cacheDir, videoId), { force: true })
       fs.rmSync(cacheMetaPath(cacheDir, videoId), { force: true })
       logger.info(
-        `evicted cached video ${videoId} (LRU, cache size exceeded MEDIA_CACHE_MAX_BYTES)`
+        'media.cache.evicted',
+        'Evicted cached video using LRU policy',
+        { video_id: videoId, reason: 'cache_size_exceeded' }
       )
     } catch (err) {
       logger.warn(
-        `failed to evict cached video ${videoId}: ${(err as Error).message}`
+        'media.cache.eviction_failed',
+        'Failed to evict cached video',
+        { video_id: videoId, error: err }
       )
     }
   }
@@ -184,32 +188,60 @@ async function downloadAndCache(
 ): Promise<string> {
   const filePath = cacheFilePath(config.mediaCacheDir, videoId)
 
-  return downloadMutex.run(videoId, async () => {
-    // Mutex 取得待ちの間に別の呼び出しが先にダウンロードを終えている可能性があるため再チェックする。
-    const recheckFresh = peekFreshCache(config, videoId)
-    if (recheckFresh) return recheckFresh
+  return downloadMutex.run(videoId, async () =>
+    logger.withContext(
+      {
+        operation: 'media.cache.download',
+        operation_id: logger.newOperationId(),
+      },
+      async () => {
+        const startedAt = performance.now()
+        let phase = 'prepare'
+        try {
+          // Mutex 取得待ちの間に別の呼び出しが先にダウンロードを終えている可能性があるため再チェックする。
+          const recheckFresh = peekFreshCache(config, videoId)
+          if (recheckFresh) return recheckFresh
 
-    fs.mkdirSync(config.mediaCacheDir, { recursive: true })
-    await downloadVideo(videoId, filePath, {
-      ytdlpPath: config.ytdlpPath,
-      timeoutMs: config.mediaDownloadTimeoutMs,
-      maxHeight: config.mediaMaxHeight,
-    })
+          fs.mkdirSync(config.mediaCacheDir, { recursive: true })
+          phase = 'download'
+          await downloadVideo(videoId, filePath, {
+            ytdlpPath: config.ytdlpPath,
+            timeoutMs: config.mediaDownloadTimeoutMs,
+            maxHeight: config.mediaMaxHeight,
+          })
 
-    const stat = fs.statSync(filePath)
-    const downloadedAt = Date.now()
-    const newMeta: CacheEntryMeta = {
-      videoId,
-      sizeBytes: stat.size,
-      downloadedAt,
-      lastAccessedAt: downloadedAt,
-    }
-    persistMeta(config.mediaCacheDir, newMeta)
-    logger.info(`cached video ${videoId} (${stat.size} bytes)`)
+          phase = 'verify'
+          const stat = fs.statSync(filePath)
+          const downloadedAt = Date.now()
+          const newMeta: CacheEntryMeta = {
+            videoId,
+            sizeBytes: stat.size,
+            downloadedAt,
+            lastAccessedAt: downloadedAt,
+          }
+          phase = 'metadata'
+          persistMeta(config.mediaCacheDir, newMeta)
+          logger.info('media.cache.downloaded', 'Video cached', {
+            video_id: videoId,
+            size_bytes: stat.size,
+            duration_ms: Math.round(performance.now() - startedAt),
+          })
 
-    runEviction(config.mediaCacheDir, config.mediaCacheMaxBytes)
-    return filePath
-  })
+          phase = 'eviction'
+          runEviction(config.mediaCacheDir, config.mediaCacheMaxBytes)
+          return filePath
+        } catch (err) {
+          logger.error('media.cache.download_failed', 'Cache fill failed', {
+            video_id: videoId,
+            phase,
+            duration_ms: Math.round(performance.now() - startedAt),
+            error: err,
+          })
+          throw err
+        }
+      }
+    )
+  )
 }
 
 /**
@@ -239,14 +271,7 @@ export function triggerBackgroundDownload(
   config: AppConfig,
   videoId: string
 ): void {
-  downloadAndCache(config, videoId).catch((err: unknown) => {
-    logger.warn(
-      `background download failed for video ${videoId}: ${(err as Error).message}`
-    )
-    if (err instanceof YtdlpError && err.stderr.length > 0) {
-      logger.error(err.stderr)
-    }
-  })
+  downloadAndCache(config, videoId).catch(() => undefined)
 }
 
 /**
@@ -307,14 +332,13 @@ function isPermanentVideoError(err: unknown): boolean {
   )
 }
 
-/** Prefetch 失敗をログに残す。`err` が {@link YtdlpError} なら stderr も併せて出力する。 */
+/** Prefetch 失敗をログに残す。 */
 function logPrefetchFailure(videoId: string, err: unknown, suffix = ''): void {
-  logger.warn(
-    `prefetch failed for video ${videoId}${suffix}: ${(err as Error).message}`
-  )
-  if (err instanceof YtdlpError && err.stderr.length > 0) {
-    logger.error(err.stderr)
-  }
+  logger.warn('media.prefetch.failed', 'Video prefetch failed', {
+    video_id: videoId,
+    reason: suffix.trim() || undefined,
+    error: err instanceof Error ? err : new Error(String(err)),
+  })
 }
 
 /**
@@ -332,55 +356,70 @@ export async function prefetchAll(
   videoIds: string[],
   concurrency = 2
 ): Promise<void> {
-  let cursor = 0
-  let cooldownUntil = 0
+  return logger.withContext(
+    { operation: 'media.prefetch', operation_id: logger.newOperationId() },
+    async () => {
+      const startedAt = performance.now()
+      let cursor = 0
+      let cooldownUntil = 0
 
-  // 1 回目・リトライのどちらで発生したエラーも同じ分類を通す (リトライ側だけボット検知を
-  // 見逃してクールダウンが発動しない、といった一貫性の欠如を避けるため)。
-  async function attempt(videoId: string): Promise<void> {
-    for (let attemptNumber = 1; attemptNumber <= 2; attemptNumber++) {
-      try {
-        await getOrDownload(config, videoId)
-        return
-      } catch (err) {
-        if (isBotDetectionError(err)) {
-          cooldownUntil = Date.now() + BOT_DETECTION_COOLDOWN_MS
-          logPrefetchFailure(
-            videoId,
-            err,
-            ` (bot detection, pausing prefetch for ${BOT_DETECTION_COOLDOWN_MS / 1000}s)`
-          )
-          return
+      // 1 回目・リトライのどちらで発生したエラーも同じ分類を通す (リトライ側だけボット検知を
+      // 見逃してクールダウンが発動しない、といった一貫性の欠如を避けるため)。
+      /** 動画を取得し、分類に応じて retry・cooldown・failure log を行う。 */
+      async function attempt(videoId: string): Promise<void> {
+        for (let attemptNumber = 1; attemptNumber <= 2; attemptNumber++) {
+          try {
+            await getOrDownload(config, videoId)
+            return
+          } catch (err) {
+            if (isBotDetectionError(err)) {
+              cooldownUntil = Date.now() + BOT_DETECTION_COOLDOWN_MS
+              logPrefetchFailure(
+                videoId,
+                err,
+                ` (bot detection, pausing prefetch for ${BOT_DETECTION_COOLDOWN_MS / 1000}s)`
+              )
+              return
+            }
+            if (isPermanentVideoError(err)) {
+              logPrefetchFailure(videoId, err)
+              return
+            }
+            if (attemptNumber === 1) {
+              logPrefetchFailure(videoId, err, ', retrying once')
+              await sleep(TRANSIENT_RETRY_DELAY_MS)
+              continue
+            }
+            logPrefetchFailure(videoId, err, ' after retry')
+          }
         }
-        if (isPermanentVideoError(err)) {
-          logPrefetchFailure(videoId, err)
-          return
-        }
-        if (attemptNumber === 1) {
-          logPrefetchFailure(videoId, err, ', retrying once')
-          await sleep(TRANSIENT_RETRY_DELAY_MS)
-          continue
-        }
-        logPrefetchFailure(videoId, err, ' after retry')
       }
-    }
-  }
 
-  async function worker(): Promise<void> {
-    while (cursor < videoIds.length) {
-      const videoId = videoIds[cursor]
-      cursor += 1
-      if (Date.now() < cooldownUntil) {
-        // 残り全件を同期的に消費してログを連発しないよう、continue ではなく打ち切る
-        // (未処理分は次回の Refresh/Prefetch サイクルに任せる)。
-        logger.warn(
-          `prefetch cooldown active, skipping remaining videos starting from ${videoId}`
-        )
-        return
+      /** 共有 cursor から次の動画を取得して指定 concurrency まで処理する。 */
+      async function worker(): Promise<void> {
+        while (cursor < videoIds.length) {
+          const videoId = videoIds[cursor]
+          cursor += 1
+          if (Date.now() < cooldownUntil) {
+            // 残り全件を同期的に消費してログを連発しないよう、continue ではなく打ち切る
+            // (未処理分は次回の Refresh/Prefetch サイクルに任せる)。
+            logger.warn(
+              'media.prefetch.cooldown',
+              'Prefetch cooldown is active; remaining videos were skipped',
+              { video_id: videoId, cooldown_until: cooldownUntil }
+            )
+            return
+          }
+          await attempt(videoId)
+        }
       }
-      await attempt(videoId)
+      const workerCount = Math.min(concurrency, videoIds.length)
+      await Promise.all(Array.from({ length: workerCount }, () => worker()))
+      logger.info('media.prefetch.completed', 'Media prefetch completed', {
+        video_count: videoIds.length,
+        cooldown_active: Date.now() < cooldownUntil,
+        duration_ms: Math.round(performance.now() - startedAt),
+      })
     }
-  }
-  const workerCount = Math.min(concurrency, videoIds.length)
-  await Promise.all(Array.from({ length: workerCount }, () => worker()))
+  )
 }

@@ -36,6 +36,7 @@ interface LiveRelayState {
   /** 最初のセグメント書き出し完了後に non-null になる (視聴可能になったことを示す)。 */
   playlistPath: string | null
   startedAt: number
+  operationId: string
   lastAccessedAt: number
   /**
    * ffmpeg が起動直後 (最初のセグメント書き出し前) に失敗したことを示す。
@@ -98,6 +99,15 @@ async function waitForFirstSegment(
       if (!filename || !SEGMENT_FILE_PATTERN.test(filename)) return
       finish(resolve)
     })
+    // 初回 scan と watcher 登録の間に segment が作成される race を避けるため、watcher 登録後に再確認する。
+    fs.promises
+      .readdir(outDir)
+      .then((entries) => {
+        if (entries.some((name) => SEGMENT_FILE_PATTERN.test(name))) {
+          finish(resolve)
+        }
+      })
+      .catch(() => undefined)
     handles.timer = setTimeout(() => {
       finish(() => {
         reject(
@@ -245,11 +255,22 @@ function ensureSweeper(config: AppConfig): void {
   sweeper = setInterval(() => {
     const current = sweepConfig
     if (current === null) return
-    evictIdleLiveRelays(current.liveRelayIdleTtlMs)
-      .then(() => evictVodRelays(current))
-      .catch((err: unknown) => {
-        logger.warn(`live relay sweep failed: ${(err as Error).message}`)
-      })
+    logger.withContext(
+      {
+        request_id: undefined,
+        operation: 'relay.live.sweep',
+        operation_id: logger.newOperationId(),
+      },
+      () => {
+        evictIdleLiveRelays(current.liveRelayIdleTtlMs)
+          .then(() => evictVodRelays(current))
+          .catch((err: unknown) => {
+            logger.warn('relay.live.sweep.failed', 'Live relay sweep failed', {
+              error: err instanceof Error ? err : new Error(String(err)),
+            })
+          })
+      }
+    )
   }, SWEEP_INTERVAL_MS)
   sweeper.unref()
 }
@@ -362,32 +383,42 @@ async function startLiveRelay(
     Promise.withResolvers()
 
   const now = Date.now()
+  const operationId = logger.newOperationId()
   const state: LiveRelayState = {
     videoId,
     ffmpegProcess,
     outDir,
     playlistPath: null,
     startedAt: now,
+    operationId,
     lastAccessedAt: now,
     startupFailure,
     exited,
   }
   relays.set(videoId, state)
+  logger.info('relay.live.lifecycle.started', 'Live relay started', {
+    video_id: videoId,
+    operation: 'relay.live',
+    operation_id: operationId,
+    process_id: ffmpegProcess.pid,
+  })
 
   const STDERR_TAIL_MAX = 4000
   let stderrTail = ''
   ffmpegProcess.stderr?.on('data', (chunk: Buffer) => {
     const text = chunk.toString('utf8')
     stderrTail = (stderrTail + text).slice(-STDERR_TAIL_MAX)
-    logger.warn(`live relay for video ${videoId} ffmpeg stderr: ${text.trim()}`)
   })
 
   // spawn 自体の失敗 (ffmpeg バイナリが無い等) は 'error' で通知される。リスナーが無いと
   // Node プロセス全体を落とす未処理例外になるため、必ず登録する。
   ffmpegProcess.on('error', (err) => {
-    logger.error(
-      `live relay for video ${videoId} failed to spawn ffmpeg: ${err.message}`
-    )
+    logger.error('relay.live.lifecycle.failed', 'Failed to spawn ffmpeg', {
+      video_id: videoId,
+      operation: 'relay.live',
+      operation_id: operationId,
+      error: err,
+    })
     signalStartupFailure(err)
     signalExited()
     if (relays.get(videoId) === state) {
@@ -396,7 +427,9 @@ async function startLiveRelay(
         .rm(outDir, { recursive: true, force: true })
         .catch((error: unknown) => {
           logger.warn(
-            `failed to remove live relay outDir ${outDir}: ${(error as Error).message}`
+            'relay.live.cleanup.failed',
+            'Failed to remove live relay files',
+            { video_id: videoId, error }
           )
         })
     }
@@ -412,14 +445,29 @@ async function startLiveRelay(
     if (relays.get(videoId) !== state) return
     relays.delete(videoId)
     if (code === 0) {
-      logger.info(
-        `live relay for video ${videoId} stopped (ffmpeg exit code ${code})`
-      )
+      logger.info('relay.live.lifecycle.stopped', 'Live relay stopped', {
+        video_id: videoId,
+        operation: 'relay.live',
+        operation_id: operationId,
+        exit_code: code,
+        duration_ms: Date.now() - state.startedAt,
+      })
     } else {
       logger.error(
-        `live relay for video ${videoId} ffmpeg exited unexpectedly with code ${code}${
-          stderrTail ? `: ${stderrTail}` : ''
-        }`
+        'relay.live.lifecycle.failed',
+        'ffmpeg exited unexpectedly',
+        {
+          video_id: videoId,
+          operation: 'relay.live',
+          operation_id: operationId,
+          error: {
+            type: 'FfmpegExitError',
+            message: `ffmpeg exited with code ${String(code)}`,
+            code: code ?? 'signal',
+            stderr: stderrTail,
+          },
+          duration_ms: Date.now() - state.startedAt,
+        }
       )
       signalStartupFailure(new Error(`ffmpeg exited with code ${String(code)}`))
     }
@@ -427,7 +475,9 @@ async function startLiveRelay(
       .rm(outDir, { recursive: true, force: true })
       .catch((error: unknown) => {
         logger.warn(
-          `failed to remove live relay outDir ${outDir}: ${(error as Error).message}`
+          'relay.live.cleanup.failed',
+          'Failed to remove live relay files',
+          { video_id: videoId, error }
         )
       })
   })

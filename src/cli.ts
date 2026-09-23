@@ -18,9 +18,10 @@ async function main() {
   // タプル型として明示し command 未指定 (引数なし) のケースを型上も表現する。
   const [command, playlistId] = process.argv.slice(2) as [string?, string?]
   if (command !== 'refresh') {
-    logger.error(
-      `Unknown command: ${command ?? '(none)'}. Usage: playlistctl refresh [playlistId]`
-    )
+    logger.error('cli.command.failed', 'Unknown command', {
+      command: command ?? '(none)',
+      usage: 'playlistctl refresh [playlistId]',
+    })
     process.exitCode = 1
     return
   }
@@ -31,17 +32,27 @@ async function main() {
     const result = await refreshPlaylist(config, playlistId, {
       warmRelayVideos: false,
     })
-    logger.info(JSON.stringify(result))
+    logger.info('cli.refresh.completed', 'Playlist refresh command completed', {
+      ...result,
+    })
     process.exitCode = result.ok ? 0 : 1
     return
   }
 
   const results = await refreshAll(config, { warmRelayVideos: false })
-  logger.info(JSON.stringify(results))
+  logger.info(
+    'cli.refresh_all.completed',
+    'Playlist refresh command completed',
+    {
+      results,
+    }
+  )
   process.exitCode = results.every((r) => r.ok) ? 0 : 1
 }
 
 main().catch((err: unknown) => {
-  logger.error(err instanceof Error ? (err.stack ?? err.message) : String(err))
+  logger.error('cli.command.failed', 'CLI command failed', {
+    error: err instanceof Error ? err : new Error(String(err)),
+  })
   process.exitCode = 1
 })

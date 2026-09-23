@@ -115,7 +115,9 @@ function extractHlsMasterManifestUrl(
     (!hasAvc1 || isLive)
   ) {
     logger.warn(
-      `No AVC1 HLS variant found for video ${videoId}; falling back to the raw master manifest URL (may hit the known VRChat/AVPro playback issue)`
+      'media.hls_variant.fallback',
+      'No AVC1 HLS variant was found; using the master manifest URL',
+      { video_id: videoId, fallback: 'master_manifest' }
     )
   }
 

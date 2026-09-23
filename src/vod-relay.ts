@@ -20,6 +20,7 @@ interface ParsedPlaylist {
 
 /** videoId 単位の VOD 再公開状態。segment は要求されたときに 1 個ずつ多重化する。 */
 interface VodRelayState {
+  operationId: string
   outDir: string
   video: ParsedPlaylist
   audio: ParsedPlaylist
@@ -244,6 +245,12 @@ export function stopVodRelay(videoId: string): Promise<void> {
   const done = (async () => {
     await Promise.allSettled(state.inflight.values())
     await fs.promises.rm(state.outDir, { recursive: true, force: true })
+    logger.info('relay.vod.lifecycle.stopped', 'VOD relay stopped', {
+      video_id: videoId,
+      operation: 'relay.vod',
+      operation_id: state.operationId,
+      size_bytes: state.bytes,
+    })
   })().finally(() => {
     stopping.delete(videoId)
   })
@@ -265,6 +272,13 @@ export async function ensureVodSegment(
   try {
     file = await getSegment(state, index)
   } catch (err) {
+    logger.error('relay.vod.segment.failed', 'Failed to prepare VOD segment', {
+      video_id: videoId,
+      segment_index: index,
+      operation: 'relay.vod.segment',
+      operation_id: state.operationId,
+      error: err instanceof Error ? err : new Error(String(err)),
+    })
     // 取得元 URL の失効 (403/410 等) は以降の要求でも直らないため、再作成 (URL の再解決) できるよう破棄する。
     if (
       /^HTTP 4\d\d /.test((err as Error).message) &&
@@ -272,7 +286,9 @@ export async function ensureVodSegment(
     ) {
       stopVodRelay(videoId).catch((error: unknown) => {
         logger.warn(
-          `vod relay for video ${videoId} failed to stop: ${(error as Error).message}`
+          'relay.vod.cleanup.failed',
+          'Failed to stop VOD relay after a segment source error',
+          { video_id: videoId, operation_id: state.operationId, error }
         )
       })
     }
@@ -281,7 +297,14 @@ export async function ensureVodSegment(
   if (index + 1 < state.video.segments.length && vods.get(videoId) === state) {
     getSegment(state, index + 1).catch((err: unknown) => {
       logger.warn(
-        `vod relay prefetch for video ${videoId} failed: ${(err as Error).message}`
+        'relay.vod.segment.prefetch_failed',
+        'VOD relay segment prefetch failed',
+        {
+          video_id: videoId,
+          segment_index: index + 1,
+          operation_id: state.operationId,
+          error: err instanceof Error ? err : new Error(String(err)),
+        }
       )
     })
   }
@@ -309,9 +332,10 @@ async function stopVodRelaySafely(videoId: string): Promise<void> {
   try {
     await stopVodRelay(videoId)
   } catch (err) {
-    logger.warn(
-      `vod relay for video ${videoId} failed to stop: ${(err as Error).message}`
-    )
+    logger.warn('relay.vod.cleanup.failed', 'Failed to stop VOD relay', {
+      video_id: videoId,
+      error: err,
+    })
   }
 }
 
@@ -335,7 +359,15 @@ export async function evictVodRelays(config: AppConfig): Promise<void> {
     if (total <= config.liveRelayMaxBytes) break
     total -= state.bytes
     logger.warn(
-      `vod relay total size exceeds ${config.liveRelayMaxBytes} bytes; stopping the least recently used relay for video ${videoId}`
+      'relay.vod.cache.evicted',
+      'VOD relay exceeded its size limit',
+      {
+        video_id: videoId,
+        reason: 'cache_size_exceeded',
+        size_bytes: state.bytes,
+        max_bytes: config.liveRelayMaxBytes,
+        operation_id: state.operationId,
+      }
     )
     await stopVodRelaySafely(videoId)
   }
@@ -352,6 +384,8 @@ export async function ensureVodRelay(
   outDir: string,
   masterUrl: string
 ): Promise<{ outDir: string; playlistFileName: string } | { error: string }> {
+  const operationId = logger.newOperationId()
+  const startedAt = performance.now()
   await stopping.get(videoId)
   const existing = getVodRelay(videoId)
   if (existing) return existing
@@ -381,6 +415,7 @@ export async function ensureVodRelay(
         : fetchBuffer(audio.init, config.ytdlpTimeoutMs),
     ])
     state = {
+      operationId,
       outDir,
       video,
       audio,
@@ -394,7 +429,15 @@ export async function ensureVodRelay(
     }
   } catch (err) {
     logger.error(
-      `vod relay for video ${videoId} failed to prepare: ${(err as Error).message}`
+      'relay.vod.preparation.failed',
+      'Failed to prepare VOD relay',
+      {
+        video_id: videoId,
+        operation: 'relay.vod.preparation',
+        operation_id: operationId,
+        duration_ms: Math.round(performance.now() - startedAt),
+        error: err instanceof Error ? err : new Error(String(err)),
+      }
     )
     return { error: 'failed to prepare VOD relay' }
   }
@@ -406,5 +449,12 @@ export async function ensureVodRelay(
     buildVodPlaylist(state.video.segments)
   )
   vods.set(videoId, state)
+  logger.info('relay.vod.preparation.completed', 'VOD relay prepared', {
+    video_id: videoId,
+    operation: 'relay.vod.preparation',
+    operation_id: operationId,
+    segment_count: state.video.segments.length,
+    duration_ms: Math.round(performance.now() - startedAt),
+  })
   return { outDir, playlistFileName: PLAYLIST_FILE_NAME }
 }

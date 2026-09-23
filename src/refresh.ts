@@ -12,14 +12,18 @@ import {
   recordFailure,
 } from './manifest-store'
 import type { Manifest } from './types'
-import { fetchPlaylistEntries, YtdlpError } from './ytdlp'
+import { fetchPlaylistEntries } from './ytdlp'
 
 const refreshMutex = new KeyedMutex()
 const relayWarmupMinDurationSeconds = 30 * 60
 const relayWarmupConcurrency = 2
 const relayWarmupLimitPerPlaylist = 8
 const relayWarmupQueueLimit = 32
-const relayWarmupQueue: { playlistId: string; videoId: string }[] = []
+const relayWarmupQueue: {
+  playlistId: string
+  videoId: string
+  requestId?: string
+}[] = []
 const scheduledRelayWarmups = new Set<string>()
 let activeRelayWarmups = 0
 
@@ -53,16 +57,40 @@ function startRelayWarmups(config: AppConfig): void {
       activeRelayWarmups -= 1
       startRelayWarmups(config)
     }
-    resolveVideoInfo(warmup.videoId, {
-      ytdlpPath: config.ytdlpPath,
-      timeoutMs: config.ytdlpTimeoutMs,
-      cacheTtlMs: config.manifestCacheTtlMs,
-    }).then(finishWarmup, (err: unknown) => {
-      logger.warn(
-        `relay warm-up failed for ${warmup.playlistId}/${warmup.videoId}: ${(err as Error).message}`
-      )
-      finishWarmup()
-    })
+    const operationId = logger.newOperationId()
+    logger.withContext(
+      {
+        request_id: warmup.requestId,
+        operation: 'relay.warmup',
+        operation_id: operationId,
+      },
+      () => {
+        const startedAt = performance.now()
+        resolveVideoInfo(warmup.videoId, {
+          ytdlpPath: config.ytdlpPath,
+          timeoutMs: config.ytdlpTimeoutMs,
+          cacheTtlMs: config.manifestCacheTtlMs,
+        }).then(
+          () => {
+            logger.info('relay.warmup.completed', 'Relay warm-up completed', {
+              playlist_id: warmup.playlistId,
+              video_id: warmup.videoId,
+              duration_ms: Math.round(performance.now() - startedAt),
+            })
+            finishWarmup()
+          },
+          (err: unknown) => {
+            logger.warn('relay.warmup.failed', 'Relay warm-up failed', {
+              playlist_id: warmup.playlistId,
+              video_id: warmup.videoId,
+              duration_ms: Math.round(performance.now() - startedAt),
+              error: err instanceof Error ? err : new Error(String(err)),
+            })
+            finishWarmup()
+          }
+        )
+      }
+    )
   }
 }
 
@@ -84,13 +112,18 @@ function scheduleRelayWarmups(
   for (const entry of longEntries) {
     if (scheduledRelayWarmups.has(entry.id)) continue
     if (relayWarmupQueue.length >= relayWarmupQueueLimit) {
-      logger.warn(
-        `relay warm-up queue is full; skipping ${playlistId}/${entry.id}`
-      )
+      logger.warn('relay.warmup.skipped', 'Relay warm-up queue is full', {
+        playlist_id: playlistId,
+        video_id: entry.id,
+      })
       continue
     }
     scheduledRelayWarmups.add(entry.id)
-    relayWarmupQueue.push({ playlistId, videoId: entry.id })
+    relayWarmupQueue.push({
+      playlistId,
+      videoId: entry.id,
+      requestId: logger.getContext().request_id,
+    })
   }
 
   startRelayWarmups(config)
@@ -111,64 +144,86 @@ function runRefresh(
   playlistId: string,
   warmRelayVideos: boolean
 ): Promise<RefreshResult> {
-  return refreshMutex.run(playlistId, async () => {
-    const maxSlots = maxSlotsFor(config, playlistId)
-    const now = Date.now()
-    try {
-      const entries = await fetchPlaylistEntries(playlistId, {
-        ytdlpPath: config.ytdlpPath,
-        timeoutMs: config.ytdlpTimeoutMs,
-      })
-      const previous = loadSlotState(config.dataDir, playlistId)
-      const { state, manifest } = buildManifest(
-        previous,
-        playlistId,
-        maxSlots,
-        entries,
-        now
-      )
-      persistSlotState(config.dataDir, state)
-      manifestCache.set(playlistId, { manifest, fetchedAt: now })
-      logger.info(
-        `refreshed ${playlistId}: generation=${state.generation} tracks=${entries.length}`
-      )
-
-      if (
-        config.mediaDeliveryMode === 'proxy' ||
-        config.mediaDeliveryMode === 'hybrid'
-      ) {
-        // Response Blocking を避けるため await しない。失敗は prefetchAll 内部でログするだけで、
-        // 冷キャッシュ時は Media Endpoint 側 (getOrDownload / hybrid の redirect フォールバック) が
-        // 改めてダウンロードするため機能に影響しない。
-        // 末尾の .catch() で例外を処理しているため no-floating-promises 上も未処理 Promise 扱いにならない。
-        prefetchAll(
-          config,
-          entries.map((entry) => entry.id)
-        ).catch((err: unknown) => {
-          logger.error(
-            `prefetch failed for ${playlistId}: ${(err as Error).message}`
+  return refreshMutex.run(playlistId, async () =>
+    logger.withContext(
+      {
+        operation: 'playlist.refresh',
+        operation_id: logger.newOperationId(),
+      },
+      async () => {
+        const startedAt = performance.now()
+        const maxSlots = maxSlotsFor(config, playlistId)
+        const now = Date.now()
+        try {
+          const entries = await fetchPlaylistEntries(playlistId, {
+            ytdlpPath: config.ytdlpPath,
+            timeoutMs: config.ytdlpTimeoutMs,
+          })
+          const previous = loadSlotState(config.dataDir, playlistId)
+          const { state, manifest } = buildManifest(
+            previous,
+            playlistId,
+            maxSlots,
+            entries,
+            now
           )
-        })
-      } else if (warmRelayVideos && config.mediaDeliveryMode === 'relay') {
-        scheduleRelayWarmups(config, playlistId, entries)
-      }
+          persistSlotState(config.dataDir, state)
+          manifestCache.set(playlistId, { manifest, fetchedAt: now })
+          logger.info(
+            'playlist.refresh.completed',
+            'Playlist refresh completed',
+            {
+              playlist_id: playlistId,
+              generation: state.generation,
+              track_count: entries.length,
+              duration_ms: Math.round(performance.now() - startedAt),
+            }
+          )
 
-      return {
-        playlistId,
-        ok: true,
-        generation: state.generation,
-        trackCount: entries.length,
+          if (
+            config.mediaDeliveryMode === 'proxy' ||
+            config.mediaDeliveryMode === 'hybrid'
+          ) {
+            // Response Blocking を避けるため await しない。失敗は prefetchAll 内部でログするだけで、
+            // 冷キャッシュ時は Media Endpoint 側 (getOrDownload / hybrid の redirect フォールバック) が
+            // 改めてダウンロードするため機能に影響しない。
+            // 末尾の .catch() で例外を処理しているため no-floating-promises 上も未処理 Promise 扱いにならない。
+            prefetchAll(
+              config,
+              entries.map((entry) => entry.id)
+            ).catch((err: unknown) => {
+              logger.error(
+                'media.prefetch.failed',
+                'Playlist media prefetch failed',
+                {
+                  playlist_id: playlistId,
+                  error: err instanceof Error ? err : new Error(String(err)),
+                }
+              )
+            })
+          } else if (warmRelayVideos && config.mediaDeliveryMode === 'relay') {
+            scheduleRelayWarmups(config, playlistId, entries)
+          }
+
+          return {
+            playlistId,
+            ok: true,
+            generation: state.generation,
+            trackCount: entries.length,
+          }
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err)
+          logger.error('playlist.refresh.failed', 'Playlist refresh failed', {
+            playlist_id: playlistId,
+            duration_ms: Math.round(performance.now() - startedAt),
+            error: err instanceof Error ? err : new Error(message),
+          })
+          recordFailure(config.dataDir, playlistId, maxSlots, message, now)
+          return { playlistId, ok: false, error: message }
+        }
       }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      logger.error(`refresh failed for ${playlistId}: ${message}`)
-      if (err instanceof YtdlpError && err.stderr.length > 0) {
-        logger.error(err.stderr)
-      }
-      recordFailure(config.dataDir, playlistId, maxSlots, message, now)
-      return { playlistId, ok: false, error: message }
-    }
-  })
+    )
+  )
 }
 
 /**
@@ -262,7 +317,9 @@ export async function getManifestForClient(
 
   if (cached) {
     logger.warn(
-      `serving stale cached manifest for ${playlistId} after refresh failure: ${result.error}`
+      'playlist.refresh.cache_served',
+      'Serving stale cached manifest after refresh failed',
+      { playlist_id: playlistId, stale: true, refresh_error: result.error }
     )
     return { manifest: cached.manifest, error: result.error }
   }

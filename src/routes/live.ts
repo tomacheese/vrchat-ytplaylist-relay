@@ -62,7 +62,13 @@ function serveLiveFile(
     })
     .catch((err: unknown) => {
       logger.error(
-        `failed to prepare segment ${file} for video ${videoId}: ${(err as Error).message}`
+        'relay.live.segment.failed',
+        'Failed to prepare live segment',
+        {
+          video_id: videoId,
+          segment: file,
+          error: err instanceof Error ? err : new Error(String(err)),
+        }
       )
       res.status(502).json({ error: 'failed to prepare segment' })
     })

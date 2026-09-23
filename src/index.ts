@@ -6,13 +6,16 @@ const config = loadConfig()
 const app = createApp(config)
 
 app.listen(config.port, () => {
-  logger.info(`listening on :${config.port}`)
-  logger.info(
-    `playlists: ${config.playlists.map((p) => p.playlistId).join(', ')}`
-  )
+  logger.info('server.started', 'HTTP server started', {
+    port: config.port,
+    media_delivery_mode: config.mediaDeliveryMode,
+    live_delivery_mode: config.liveDeliveryMode,
+    playlist_count: config.playlists.length,
+  })
   if (!config.adminToken) {
     logger.warn(
-      'ADMIN_TOKEN is not set: /admin/refresh endpoints are disabled. Use `pnpm run refresh` (CLI) instead.'
+      'server.admin_disabled',
+      'Admin refresh endpoints are disabled because ADMIN_TOKEN is not set'
     )
   }
 })
