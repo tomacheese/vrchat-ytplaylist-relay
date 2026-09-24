@@ -26,8 +26,10 @@ interface VodRelayState {
   audio: ParsedPlaylist
   videoInit: Buffer | null
   audioInit: Buffer | null
-  /** 各 segment の開始時刻 (秒。playlist 上の EXTINF の累計)。 */
-  starts: number[]
+  /** 映像側の各 segment の開始時刻 (秒。映像 playlist 上の EXTINF の累計)。 */
+  videoStarts: number[]
+  /** 音声側の各 segment の開始時刻 (秒。音声 playlist 上の EXTINF の累計)。映像とは独立して計算する。 */
+  audioStarts: number[]
   done: Set<number>
   inflight: Map<number, Promise<string>>
   /** 多重化済み segment の合計サイズ (bytes)。 */
@@ -161,6 +163,8 @@ function runFfmpeg(args: string[]): Promise<void> {
 /**
  * 映像・音声の segment k を取得し、`-c copy` で MPEG-TS 1 個に多重化する。
  * YouTube の音声 segment は時刻が 0 から始まるため、元の時刻は使わず playlist 上の開始時刻を与える。
+ * 映像と音声で EXTINF の丸めが segment ごとに一致しないことがあるため、`-itsoffset` を入力ごとに
+ * 指定し、各ストリーム自身の累計 (`videoStarts`/`audioStarts`) で独立に offset する。
  * fMP4 は初期化セグメントを先頭に付ける。
  */
 async function produceSegment(
@@ -186,8 +190,12 @@ async function produceSegment(
       ),
     ])
     await runFfmpeg([
+      '-itsoffset',
+      state.videoStarts[k].toFixed(3),
       '-i',
       videoSrc,
+      '-itsoffset',
+      state.audioStarts[k].toFixed(3),
       '-i',
       audioSrc,
       '-map',
@@ -198,8 +206,6 @@ async function produceSegment(
       'copy',
       '-f',
       'mpegts',
-      '-output_ts_offset',
-      state.starts[k].toFixed(3),
       '-muxdelay',
       '0',
       '-muxpreload',
@@ -421,7 +427,8 @@ export async function ensureVodRelay(
       audio,
       videoInit,
       audioInit,
-      starts: segmentStarts(video.segments),
+      videoStarts: segmentStarts(video.segments),
+      audioStarts: segmentStarts(audio.segments),
       done: new Set(),
       inflight: new Map(),
       bytes: 0,

@@ -37,17 +37,18 @@ const MASTER = [
   '',
 ].join('\n')
 
-/** 3 segment の fMP4 相当の media playlist (init 付き)。 */
-function mediaPlaylist(prefix: string): string {
+/** 3 segment の fMP4 相当の media playlist (init 付き)。durations を指定すると EXTINF を変えられる。 */
+function mediaPlaylist(
+  prefix: string,
+  durations: number[] = [5, 5, 2.5]
+): string {
   return [
     '#EXTM3U',
     `#EXT-X-MAP:URI="${prefix}-init"`,
-    '#EXTINF:5.000,',
-    `${prefix}0`,
-    '#EXTINF:5.000,',
-    `${prefix}1`,
-    '#EXTINF:2.500,',
-    `${prefix}2`,
+    ...durations.flatMap((d, i) => [
+      `#EXTINF:${d.toFixed(3)},`,
+      `${prefix}${String(i)}`,
+    ]),
     '#EXT-X-ENDLIST',
     '',
   ].join('\n')
@@ -163,10 +164,17 @@ test('ensureVodSegment muxes one segment on demand (init prepended), shares conc
     assert.equal(spawnMock.mock.calls.length, 2)
   })
   const offsets = spawnMock.mock.calls.map(([, args]) => {
-    const i = args.indexOf('-output_ts_offset')
-    return args[i + 1]
+    const videoIdx = args.indexOf('-i')
+    const audioIdx = args.indexOf('-i', videoIdx + 1)
+    return { video: args[videoIdx - 1], audio: args[audioIdx - 1] }
   })
-  assert.deepEqual(offsets, ['0.000', '5.000'])
+  assert.deepEqual(offsets, [
+    { video: '0.000', audio: '0.000' },
+    { video: '5.000', audio: '5.000' },
+  ])
+  assert.ok(
+    !spawnMock.mock.calls.flatMap(([, a]) => a).includes('-output_ts_offset')
+  )
   assert.ok(!spawnMock.mock.calls[0][1].includes('-copyts'))
   // 先読みの segment 1 も作られる。作業用の一時ファイルは残らない。
   await vi.waitFor(() => {
@@ -177,6 +185,37 @@ test('ensureVodSegment muxes one segment on demand (init prepended), shares conc
 
   assert.equal(await ensureVodSegment('testVideo01', 3), null)
   assert.equal(await ensureVodSegment('unknownVid1', 0), null)
+})
+
+test('ensureVodSegment offsets video and audio independently when their EXTINF durations differ per segment', async () => {
+  bodies['https://a.example/audio.m3u8'] = mediaPlaylist(
+    'https://a.example/s',
+    [5.2, 4.8, 2.5]
+  )
+  const { ensureVodRelay, ensureVodSegment } = await import('../src/vod-relay')
+  const outDir = path.join(root, 'testVideo02')
+  await ensureVodRelay(
+    makeConfig(),
+    'testVideo02',
+    outDir,
+    'https://f.example/master.m3u8'
+  )
+
+  await ensureVodSegment('testVideo02', 0)
+  await vi.waitFor(() => {
+    assert.ok(fs.existsSync(path.join(outDir, 'seg1.ts')))
+  })
+  const offsets = spawnMock.mock.calls.map(([, args]) => {
+    const videoIdx = args.indexOf('-i')
+    const audioIdx = args.indexOf('-i', videoIdx + 1)
+    return { video: args[videoIdx - 1], audio: args[audioIdx - 1] }
+  })
+  assert.deepEqual(offsets, [
+    { video: '0.000', audio: '0.000' },
+    { video: '5.000', audio: '5.200' },
+  ])
+
+  bodies['https://a.example/audio.m3u8'] = mediaPlaylist('https://a.example/s')
 })
 
 test('ensureVodRelay returns an error when the video and audio segment counts differ', async () => {
