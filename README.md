@@ -38,11 +38,13 @@ config/playlists.json` して編集する。設定すると、一覧に無い pl
 
 ## リバースプロキシ配下での実行 (`TRUST_PROXY`)
 
-Nginx 等のリバースプロキシ配下で稼働させる場合、Express の `trust proxy` 設定
-(`TRUST_PROXY` 環境変数、既定値 `1`) を実際のプロキシ段数に合わせる必要がある。
-設定が実際の段数と異なると `express-rate-limit` が `ERR_ERL_UNEXPECTED_X_FORWARDED_FOR`
-を出力したり、rate limit のクライアント識別 (`req.ip`) が意図せずプロキシの IP に
-なったりする。`app.set('trust proxy', true)` のような無条件信頼は行わない。
+Nginx 等のリバースプロキシ配下で稼働させる場合、アプリケーションで client IP を参照するなら
+Express の `trust proxy` 設定 (`TRUST_PROXY` 環境変数、既定値 `1`) を実際のプロキシ段数に
+合わせる。`app.set('trust proxy', true)` のような無条件信頼は行わない。
+
+再生用 endpoint (`/:playlistId/:position.mp4`、`/video/:videoId`、`/live/...`) には、HLS の
+manifest / segment を連続取得するクライアントを妨げないよう、アプリ内 rate limit を設定していない。
+リクエスト量を制御する場合は、クライアント IP を正しく識別する reverse proxy 側で設定する。
 
 ## Media 配信方式 (`MEDIA_DELIVERY_MODE` / `LIVE_DELIVERY_MODE`)
 

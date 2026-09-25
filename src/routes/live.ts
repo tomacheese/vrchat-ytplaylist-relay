@@ -1,7 +1,6 @@
 import path from 'node:path'
 import { Router } from 'express'
 import type { Response } from 'express'
-import { rateLimit } from 'express-rate-limit'
 import { VIDEO_ID_PATTERN, isPlaylistAllowed } from '../config'
 import type { AppConfig } from '../config'
 import { liveRelayDirFor, touchLiveRelay } from '../live-relay'
@@ -16,9 +15,6 @@ const POSITION_PATTERN = /^(\d+)$/
  */
 const LIVE_FILE_PATTERN = /^live\.m3u8$|^live\d+\.ts$|^seg\d+\.ts$/
 const VOD_SEGMENT_PATTERN = /^seg(\d+)\.ts$/
-
-/** Live 再公開の segment 取得は VOD 単体ファイル配信よりリクエスト頻度が高い想定だが、v1 では既存 (mediaRateLimit) と同水準を流用する。 */
-const liveRateLimit = rateLimit({ windowMs: 60_000, limit: 60 })
 
 /**
  * videoId の Live 再公開ファイル (master playlist / segment) を配信する共通処理。
@@ -81,7 +77,7 @@ function serveLiveFile(
 export function liveRouter(config: AppConfig): Router {
   const router = Router()
 
-  router.get('/:playlistId/:position/live/:file', liveRateLimit, (req, res) => {
+  router.get('/:playlistId/:position/live/:file', (req, res) => {
     const { playlistId, position: positionParam, file } = req.params
     if (!isPlaylistAllowed(config, playlistId)) {
       res.status(404).json({ error: 'unknown playlistId' })
@@ -124,7 +120,7 @@ export function liveRouter(config: AppConfig): Router {
    * `LIVE_DELIVERY_MODE=proxy` から Redirect される)。Playlist を経由しないため
    * `isPlaylistAllowed` は行わず、`VIDEO_ID_PATTERN` でのフォーマット検証のみ行う。
    */
-  router.get('/live/:videoId/:file', liveRateLimit, (req, res) => {
+  router.get('/live/:videoId/:file', (req, res) => {
     const { videoId, file } = req.params
     if (!VIDEO_ID_PATTERN.test(videoId)) {
       res.status(404).json({ error: 'invalid videoId' })

@@ -1,18 +1,10 @@
 import { Router } from 'express'
-import { rateLimit } from 'express-rate-limit'
 import { PLAYLIST_ID_PATTERN, isPlaylistAllowed } from '../config'
 import type { AppConfig } from '../config'
 import { resolveAndServe } from '../media-delivery'
 import { resolveVideoIdForPosition } from '../refresh'
 
 const POSITION_PATTERN = /^(\d+)\.mp4$/
-
-/**
- * yt-dlp ダウンロード・ファイル配信を伴うため IP ごとに 1 分あたり 60 リクエストへ制限する (DoS 対策)。
- * videoId 直接指定エンドポイント (`../routes/video`) も同じ配信処理を経由するため、
- * 合算での上限が二重にならないようこのインスタンスを共有する。
- */
-export const mediaRateLimit = rateLimit({ windowMs: 60_000, limit: 60 })
 
 /**
  * GET /{playlistId}/{position}.mp4
@@ -29,7 +21,7 @@ export const mediaRateLimit = rateLimit({ windowMs: 60_000, limit: 60 })
 export function mediaRouter(config: AppConfig): Router {
   const router = Router()
 
-  router.get('/:playlistId/:positionFile', mediaRateLimit, (req, res) => {
+  router.get('/:playlistId/:positionFile', (req, res) => {
     const { playlistId, positionFile } = req.params
     if (!isPlaylistAllowed(config, playlistId)) {
       res.status(404).json({ error: 'unknown playlistId' })
