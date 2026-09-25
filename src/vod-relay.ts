@@ -79,7 +79,10 @@ export function parseMediaPlaylist(
   return playlist
 }
 
-/** 映像 segment の長さから、`#EXT-X-ENDLIST` 付きの完全な VOD playlist を組み立てる。 */
+/**
+ * 映像 segment の長さから、`#EXT-X-ENDLIST` 付きの完全な VOD playlist を組み立てる。
+ * segment は個別に多重化され continuity counter が連続しないため、先頭以外に discontinuity を宣言する。
+ */
 export function buildVodPlaylist(segments: { duration: number }[]): string {
   const target = Math.ceil(Math.max(...segments.map((s) => s.duration)))
   return [
@@ -89,6 +92,7 @@ export function buildVodPlaylist(segments: { duration: number }[]): string {
     '#EXT-X-MEDIA-SEQUENCE:0',
     '#EXT-X-PLAYLIST-TYPE:VOD',
     ...segments.flatMap((s, i) => [
+      ...(i === 0 ? [] : ['#EXT-X-DISCONTINUITY']),
       `#EXTINF:${s.duration.toFixed(3)},`,
       `seg${String(i)}.ts`,
     ]),
