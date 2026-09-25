@@ -111,6 +111,34 @@ test('parseMediaPlaylist reads the init segment, resolves relative URIs and reje
   )
 })
 
+test('buildVodPlaylist marks the boundaries between independently muxed TS segments', async () => {
+  const { buildVodPlaylist } = await import('../src/vod-relay')
+
+  assert.equal(
+    buildVodPlaylist([{ duration: 5 }, { duration: 4.5 }, { duration: 3 }]),
+    [
+      '#EXTM3U',
+      '#EXT-X-VERSION:3',
+      '#EXT-X-TARGETDURATION:5',
+      '#EXT-X-MEDIA-SEQUENCE:0',
+      '#EXT-X-PLAYLIST-TYPE:VOD',
+      '#EXTINF:5.000,',
+      'seg0.ts',
+      '#EXT-X-DISCONTINUITY',
+      '#EXTINF:4.500,',
+      'seg1.ts',
+      '#EXT-X-DISCONTINUITY',
+      '#EXTINF:3.000,',
+      'seg2.ts',
+      '#EXT-X-ENDLIST',
+      '',
+    ].join('\n')
+  )
+  assert.ok(
+    !buildVodPlaylist([{ duration: 5 }]).includes('#EXT-X-DISCONTINUITY')
+  )
+})
+
 test('ensureVodRelay serves a complete VOD playlist (ENDLIST, source durations) without muxing anything yet', async () => {
   const { ensureVodRelay } = await import('../src/vod-relay')
   const outDir = path.join(root, 'testVideo01')
