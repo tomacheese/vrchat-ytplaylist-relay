@@ -440,6 +440,40 @@ test('GET /video/:videoId.mp4 in relay mode redirects to the resolved HLS master
   }
 })
 
+test('playback endpoints accept more than 60 requests from one client', async () => {
+  const mediaResponses = await Promise.all(
+    Array.from({ length: 61 }, () =>
+      fetch(`${baseUrl}/pl1/0.mp4`, { redirect: 'manual' })
+    )
+  )
+  assert.ok(mediaResponses.every((response) => response.status === 302))
+
+  const videoResponses = await Promise.all(
+    Array.from({ length: 61 }, () =>
+      fetch(`${baseUrl}/video/${DIRECT_VIDEO_ID}.mp4`, { redirect: 'manual' })
+    )
+  )
+  assert.ok(videoResponses.every((response) => response.status === 302))
+
+  const playlistLiveDir = liveRelayDirFor(config, 'liveVideo01')
+  fs.mkdirSync(playlistLiveDir, { recursive: true })
+  fs.writeFileSync(path.join(playlistLiveDir, 'live.m3u8'), '#EXTM3U')
+  const playlistLiveResponses = await Promise.all(
+    Array.from({ length: 61 }, () => fetch(`${baseUrl}/pl1/1/live/live.m3u8`))
+  )
+  assert.ok(playlistLiveResponses.every((response) => response.status === 200))
+
+  const liveDir = liveRelayDirFor(config, DIRECT_VIDEO_ID)
+  fs.mkdirSync(liveDir, { recursive: true })
+  fs.writeFileSync(path.join(liveDir, 'live.m3u8'), '#EXTM3U')
+  const liveResponses = await Promise.all(
+    Array.from({ length: 61 }, () =>
+      fetch(`${baseUrl}/live/${DIRECT_VIDEO_ID}/live.m3u8`)
+    )
+  )
+  assert.ok(liveResponses.every((response) => response.status === 200))
+})
+
 test('GET /video/:videoId.mp4 in relay mode remuxes a VOD master via the live relay instead of redirecting to it', async () => {
   const relayDataDir = fs.mkdtempSync(
     path.join(os.tmpdir(), 'yrp-route-test-video-relay-master-')
