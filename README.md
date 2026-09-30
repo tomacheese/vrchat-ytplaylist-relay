@@ -90,9 +90,9 @@ Playlist の情報は要求時に yt-dlp で取得し、`MANIFEST_CACHE_TTL_MS` 
 
 ## CLI で Playlist を再取得する
 
-サーバーと同じ環境設定を使って `pnpm refresh` を実行します。引数を省略すると設定済みの Playlist を順番に再取得します。allowlist を使わない場合は、`DATA_DIR` 直下のディレクトリ名を Playlist ID の候補として使います。position state 以外のディレクトリも候補になるため、既定の `cache` や `live` が作成される配信設定では allowlist を設定するか、それらの保存先を `DATA_DIR` の外へ移してください。ID を指定すれば 1 件だけ再取得できます。
+サーバーと同じ環境設定を使って `pnpm refresh` を実行します。引数を省略すると、設定済みの Playlist を順番に再取得します。allowlist が無効なら、`DATA_DIR` 直下のディレクトリ名を Playlist ID の候補にします。position state 以外のディレクトリも候補です。そのため、`cache` や `live` を `DATA_DIR` 内に作る設定では allowlist を使ってください。または、それらの保存先を `DATA_DIR` の外へ移してください。ID を指定すると、その Playlist だけを再取得します。
 
-CLI はサーバーとは別プロセスです。position 状態はディスクへ反映されますが、起動中サーバーの manifest メモリキャッシュは無効になりません。公開 manifest に反映されるのは TTL 切れ後です。即時反映が必要なら認証済みの管理 Endpoint を使ってください。
+CLI はサーバーとは別プロセスです。position 状態はディスクに反映されます。一方、起動中サーバーの manifest メモリキャッシュは無効になりません。変更が公開 manifest に反映されるのは TTL 切れ後です。すぐに反映するには、認証済みの管理 Endpoint を使ってください。
 
 ```bash
 pnpm refresh
@@ -133,15 +133,15 @@ docker run -d \
   vrchat-ytplaylist-relay
 ```
 
-`/app/data` は position 状態、VOD キャッシュ、Live / relay 一時ファイルの保存先なので volume に置いてください。allowlist を使う場合は `config/playlists.json` を `/app/config/playlists.json` に read-only で mount します。
+`/app/data` は position 状態と VOD キャッシュの保存先です。Live / relay の一時ファイルもここに作成します。このディレクトリを volume に置いてください。allowlist を使う場合は、`config/playlists.json` を `/app/config/playlists.json` に read-only で mount します。
 
 Container entrypoint は既定で起動時に yt-dlp を更新し、その後 `YTDLP_UPDATE_INTERVAL_HOURS` ごとに更新を確認します。`YTDLP_AUTO_UPDATE=0` で自動更新を無効にできます。
 
 ## ログ
 
-ログは stdout / stderr に 1 行 1 JSON object で出力します。各行には `timestamp`、`level`、`event`、`message` が入り、該当する場合は `request_id`、`operation_id`、処理時間、Playlist / video ID などが付きます。HTTP response の `X-Request-Id` は対応するログの `request_id` と一致します。
+ログは stdout / stderr に 1 行 1 JSON object で出力します。各行に `timestamp`、`level`、`event`、`message` が入ります。必要に応じて `request_id`、`operation_id`、処理時間、Playlist / video ID なども記録します。HTTP response の `X-Request-Id` はログの `request_id` と一致します。
 
-`/health` と Live / VOD segment 要求の通常成功ログは省略します。失敗は記録します。Authorization、Cookie、client IP、request body / query、動画タイトル、完全な media URL は記録しません。ログ sanitizer は既知の認証情報形式を伏せますが、未知の secret を判別できる保証はありません。機密値をログ用 field に渡さないでください。
+`/health` と Live / VOD segment 要求は、通常成功時のログを省略します。失敗は記録します。Authorization、Cookie、client IP、request body / query、動画タイトル、完全な media URL は記録しません。ログ sanitizer は既知の認証情報を伏せます。ただし、未知の secret を検出できる保証はありません。機密値をログ field に渡さないでください。
 
 ```bash
 docker logs -f vrchat-ytplaylist-relay

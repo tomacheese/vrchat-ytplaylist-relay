@@ -2,9 +2,9 @@
 
 ## What this service does
 
-This Node.js service fetches YouTube Playlist entries with yt-dlp and exposes a manifest and media routes for VRChat worlds. It does not depend on a specific world-side player implementation.
+This Node.js service uses yt-dlp to fetch YouTube Playlist entries. It exposes a manifest and media routes for VRChat worlds. The service does not depend on a specific world-side player implementation.
 
-The manifest is fetched on demand and cached in memory. `src/manifest-store.ts` assigns a persistent, never-reused position to each video ID so existing media URLs keep their meaning as a Playlist changes. Persisted state contains position mappings and refresh metadata, but not Playlist titles or ordering.
+The service fetches the manifest on demand and caches it in memory. `src/manifest-store.ts` assigns each video ID a persistent position. Positions are never reused, so existing media URLs keep their meaning as a Playlist changes. Persisted state contains position mappings and refresh metadata. It does not contain Playlist titles or ordering.
 
 ## Where to look
 
@@ -18,15 +18,16 @@ The manifest is fetched on demand and cached in memory. `src/manifest-store.ts` 
 | Logs                                           | `src/logger.ts`, `docs/logging.md`                               |
 | Tests                                          | `test/`                                                          |
 
-Register specific routes before broad routes in `src/app.ts`. In particular, `/video/:videoId` must precede `/:playlistId/:positionFile` because both use two path segments.
+Register specific routes before broad routes in `src/app.ts`. `/video/:videoId` must precede `/:playlistId/:positionFile`. Both routes use two path segments.
 
 ## Change guidance
 
 - Pass runtime configuration through `AppConfig`; read environment variables in `src/config.ts`.
 - When adding or changing a setting, update `.env.example` and the setup notes in `README.md`.
-- When changing an endpoint, manifest field, delivery mode, persistence behavior, or log contract, update `README.md` or `docs/logging.md` as applicable.
-- Keep credentials out of source, logs, examples, and test output. The logger redacts common credential formats, but call sites must not pass secrets or full media URLs.
-- Preserve the current route validation and path containment checks when changing media file handling.
+- When changing an endpoint, manifest field, delivery mode, or persistence behavior, update `README.md`.
+- When changing the log contract, update `docs/logging.md`.
+- Keep credentials out of source, logs, examples, and test output. The logger redacts common credential formats. Call sites must still avoid passing secrets or full media URLs.
+- Preserve route validation and path containment checks when changing media file handling.
 - Use the existing TypeScript, ESLint, Prettier, and Vitest setup. Avoid weakening TypeScript checks to silence an error.
 
 ## Commands
