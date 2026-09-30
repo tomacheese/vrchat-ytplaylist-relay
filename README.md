@@ -1,122 +1,125 @@
-# vrchat-ytplaylist-relay
+# VRChat YouTube Playlist Relay
 
-yt-dlp で YouTube Playlist を取得し、VRChat World (`Assets/Tomachi/YamaPlayerRemotePlaylist`)
-が消費する `manifest.json` / Media Endpoint を公開する。特定の VRChat 動画プレイヤー実装には依存しない。
+YouTube の Playlist を読み取り、VRChat のワールドが使う JSON manifest と動画 Endpoint を返す Node.js サーバーです。ワールド側の動画プレイヤー実装には依存しません。
 
-## セットアップ (ローカル実行)
+Playlist の曲順は要求時に YouTube から取得します。動画ごとの `position` は初回割り当て後に変わらないため、Playlist の編集後も既存の再生 URL を保てます。
+
+## 動作要件
+
+- Node.js 24 以降
+- pnpm 11.23.0
+- `yt-dlp` を PATH に置くか、`YTDLP_PATH` で実行ファイルを指定
+- ローカル実行で YouTube の情報を取得する場合は `deno` も PATH に置く
+- `proxy`、Live `proxy`、または音声 rendition を多重化する VOD `relay` には `ffmpeg` が必要
+
+Dockerfile には Node.js、Deno、ffmpeg と yt-dlp standalone binary が含まれます。
+
+## ローカルで起動する
 
 ```bash
 pnpm install
-cp .env.example .env   # 必要に応じて編集
-pnpm run build
-pnpm start
-# 開発時は pnpm run dev (tsx watch)
+cp .env.example .env
+pnpm run dev
 ```
 
-`ytdlp` は `YTDLP_PATH` (既定 `yt-dlp`、PATH 上のもの) を使う。
-
-yt-dlp は YouTube 抽出に外部 JS ランタイム deno を必須とする (`--js-runtimes deno`) ため、ローカル実行時は PATH 上に `deno` をインストールしておく必要がある (Docker 実行時は Image に同梱済み)。
-
-## ログ
-
-サーバーと CLI は標準出力 / 標準エラー出力へ 1 行 1 JSON object のログを出す。共通 field は `timestamp`、`level`、`event`、`message` で、処理に応じて `request_id`、`operation`、`operation_id`、`duration_ms`、対象の playlist / video ID、`error` の型・message・stack を含む。`info` は標準出力、`warn` と `error` は標準エラー出力へ出る。
-
-HTTP request にはランダムな `request_id` が割り当てられ、response の `X-Request-Id` とログ field の値が一致する。request completion event には route template、HTTP status、処理時間が入り、失敗 event には status と例外情報が入る。`/health` の通常成功ログは省略する。たとえば Docker では次のように JSON event や request ID を検索できる。
+`pnpm run dev` は `tsx` でサーバーを起動します。ビルドして実行する場合は次を使います。
 
 ```bash
-docker logs -f vrchat-ytplaylist-relay
-docker logs vrchat-ytplaylist-relay 2>&1 | grep '"event":"playlist.refresh.failed"'
-docker logs vrchat-ytplaylist-relay 2>&1 | grep '"request_id":"<X-Request-Id value>"'
+pnpm run build
+pnpm start
 ```
 
-Authorization header、cookie、client IP、request body / query、完全な media URL、動画タイトルは記録しない。例外と yt-dlp / ffmpeg の診断文字列から URL query / fragment、既知の token / signature / Bearer 値を伏せ、改行を escape して診断文字列を最大 4 KiB に制限する。redaction は既知の credential 形式を対象にするため、ログ event に秘密情報を渡さないこと。
+既定の待ち受けポートは `8787` です。`.env` は省略できます。設定の全項目と既定値は [.env.example](.env.example) にあります。
 
-`config/playlists.json` は任意。無い場合は allowlist が無効になり、要求された任意の
-playlistId をそのまま取得・配信する (事前登録不要)。特定の Playlist だけに絞りたい場合や
-Playlist ごとに `maxSlots` を上書きしたい場合は `cp config/playlists.json.example
-config/playlists.json` して編集する。設定すると、一覧に無い playlistId は 404 になる。
+## Playlist を制限する
 
-## リバースプロキシ配下での実行 (`TRUST_PROXY`)
+`config/playlists.json` が存在しない場合、Playlist allowlist は無効です。YouTube の Playlist ID を指定すれば利用できます。
 
-Nginx 等のリバースプロキシ配下で稼働させる場合、アプリケーションで client IP を参照するなら
-Express の `trust proxy` 設定 (`TRUST_PROXY` 環境変数、既定値 `1`) を実際のプロキシ段数に
-合わせる。`app.set('trust proxy', true)` のような無条件信頼は行わない。
+利用できる Playlist を限定するには、サンプルをコピーして `playlists` 配列を編集します。
 
-再生用 endpoint (`/:playlistId/:position.mp4`、`/video/:videoId`、`/live/...`) には、HLS の
-manifest / segment を連続取得するクライアントを妨げないよう、アプリ内 rate limit を設定していない。
-リクエスト量を制御する場合は、クライアント IP を正しく識別する reverse proxy 側で設定する。
+```bash
+cp config/playlists.json.example config/playlists.json
+```
 
-## Media 配信方式 (`MEDIA_DELIVERY_MODE` / `LIVE_DELIVERY_MODE`)
+```json
+{
+  "playlists": [
+    {
+      "playlistId": "PLxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "displayName": "Example Playlist",
+      "maxSlots": 1000
+    }
+  ]
+}
+```
 
-`GET /:playlistId/:position.mp4` の配信方式は、解決した動画が VOD (通常動画) か
-Live (配信中) かで別々の環境変数から選ばれる。VOD は `MEDIA_DELIVERY_MODE`、Live は
-`LIVE_DELIVERY_MODE` で切り替える (両方とも未設定なら従来通り `redirect`)。
+`displayName` は管理者向けの任意項目で、API の manifest には入りません。`maxSlots` を省略すると `DEFAULT_MAX_SLOTS` を使います。allowlist 有効時に登録していない Playlist を要求すると `404` を返します。
 
-| 値                | 挙動                                                                                                                                                                                                                                                                      | VOD | Live              | 追加要件                                                    |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --- | ----------------- | ----------------------------------------------------------- |
-| `redirect` (既定) | `https://www.youtube.com/watch?v=<videoId>` へ 302 Redirect                                                                                                                                                                                                               | ✅  | ✅                | なし                                                        |
-| `relay`           | Backend 自身の yt-dlp が解決した HLS manifest URL へ 302 Redirect (音声込みの AVC1 variant を優先選択)。VOD で音声込みの単一 variant が無い場合は、再生範囲の segment を ffmpeg で 1 個ずつ AVC1 + 音声の MPEG-TS に多重化して配信 (再エンコードなし、視聴分のみ一時保存) | ✅  | ✅                | 単一 variant があればなし。無い VOD は ffmpeg、ディスク容量 |
-| `relay-redirect`  | `relay` を試し、解決・relay 準備が失敗して 502 になる場合は YouTube watch URL へ 302 Redirect。proxy の動画ダウンロード・キャッシュは行わない                                                                                                                             | ✅  | ✅                | relay と同じ                                                |
-| `proxy`           | VOD: yt-dlp + ffmpeg でダウンロード・キャッシュしバイト列を直接配信。Live: ffmpeg で HLS をローカル再公開し配信                                                                                                                                                           | ✅  | ✅                | ffmpeg、ディスク容量                                        |
-| `hybrid`          | キャッシュ済みなら `proxy` と同様に配信、未キャッシュなら裏でダウンロードを開始しつつ `relay` 相当の応答を返す (解決失敗、および VOD の多重化の準備に失敗した場合は `redirect`)                                                                                           | ✅  | ❌ (起動時エラー) | ffmpeg、ディスク容量                                        |
+## Endpoint
 
-`redirect` は VRChat 同梱の制限付き yt-dlp (`Tools/yt-dlp.exe`) が googlevideo.com への
-直リンク解決に失敗し 403 になることがある既知の問題を抱える。`relay` は Backend 自身の
-(最新版) yt-dlp が解決した HLS master manifest URL へ Redirect するためこの問題を回避でき、
-音声込みの単一 variant が取れる場合は ffmpeg やディスクキャッシュも不要 (ステートレス)。YouTube の VOD は音声が別 rendition の master で返ることが多く、AVPro (Windows Media Foundation) は別 rendition の音声を再生できず無音になるため、その場合は、元の映像 playlist の segment 長から `#EXT-X-ENDLIST` 付きの完全な VOD playlist を最初に返し (プレイヤーが VOD と判定でき Seek バーが出る)、segment は要求されたときに映像 segment と音声 segment を ffmpeg (`-c copy`) で 1 個ずつ MPEG-TS に多重化して返す (次の segment は先読み。全編のダウンロードや ffmpeg の常駐は無い)。多重化済み segment は `LIVE_RELAY_OUT_DIR` に一時保存し、`LIVE_RELAY_IDLE_TTL_MS` でディレクトリごと削除する。`proxy` は動画データそのものを Backend
-経由で配信することで同じ問題を回避できるが、VOD ではダウンロード完了まで応答をブロックする
-ため Client 側の Timeout に間に合わないことがあり、Live では ffmpeg による HLS 再公開
-(後述) を常駐させる。`hybrid` (VOD 専用) は未キャッシュ時に即座に `relay` 相当の 302 応答を
-返しつつ裏でダウンロードを進めるため、Client が Timeout 後に再リクエストしてくる頃には
-キャッシュが出来ていて `proxy` 相当の配信に切り替わる想定の折衷案。`proxy` / `hybrid` は
-いずれも YouTube 動画データを Backend にダウンロード・再配信するため、利用規約上のリスクを
-運用者が許容していることが前提。
+| Method | Path                                | 動作                                                                    |
+| ------ | ----------------------------------- | ----------------------------------------------------------------------- |
+| `GET`  | `/`                                 | サービス名、配信方式、Playlist ID、主要 Endpoint を返す                 |
+| `GET`  | `/health`                           | Playlist ごとの最終 refresh 状態を返す。状態が degraded でも HTTP `200` |
+| `GET`  | `/:playlistId/manifest.json`        | Playlist manifest を返す                                                |
+| `GET`  | `/:playlistId/:position.mp4`        | manifest の position に対応する動画を設定済みの方式で配信する           |
+| `GET`  | `/video/:videoId`                   | Playlist を経由せず YouTube video ID を指定する。末尾の `.mp4` は任意   |
+| `GET`  | `/live/:videoId/:file`              | video ID で指定した Live / VOD relay の playlist / segment を返す       |
+| `GET`  | `/:playlistId/:position/live/:file` | Playlist position 経由の Live / VOD relay playlist / segment を返す     |
+| `POST` | `/admin/refresh`                    | 既知の全 Playlist を再取得する                                          |
+| `POST` | `/admin/refresh/:playlistId`        | 指定 Playlist を再取得する                                              |
 
-`relay-redirect` は relay で応答を作れない場合の代替として YouTube URL を返す。302 を返した後に
-YouTube または Client 側で発生するエラーは検出できないため、fallback の対象外。
-resolver failure では VOD/Live の判別前に fallback するため、どちらか一方で `relay-redirect` を使う場合、
-もう一方は `redirect` にする (両方を `relay-redirect` にする設定も可能)。
+`/video/:videoId` と `/live/:videoId/:file` は Playlist allowlist を通りません。allowlist は Playlist 経由の manifest・position route を制限しますが、video ID を直接指定する route は制限しません。
 
-VOD の `proxy` / `hybrid` はいずれも、キャッシュが `MEDIA_CACHE_TTL_MS` を超えて再ダウンロードが走っている間も、直前まで有効だった完了済みキャッシュファイルを Seek 可能な状態のまま配信し続ける (stale-while-revalidate)。
-`proxy` はブロックせず、`hybrid` は redirect フォールバックせずに即座に配信し、再ダウンロードが完了すると次回以降のリクエストから新しいファイルに切り替わる。
+Manifest の形式は次のとおりです。`tracks` は YouTube 上の現在の並び順ですが、各 `position` は動画 ID に割り当てた不変の番号です。`generation` は Playlist の順序・動画 ID・タイトルが変わった場合に増えます。
 
-VOD `proxy` / `hybrid` 関連の設定 (`.env.example` 参照): `MEDIA_MAX_HEIGHT` / `MEDIA_CACHE_DIR` /
-`MEDIA_CACHE_MAX_BYTES` / `MEDIA_CACHE_TTL_MS` / `MEDIA_DOWNLOAD_TIMEOUT_MS`。
-Live `proxy` 関連の設定: `LIVE_RELAY_OUT_DIR` (再公開先ディレクトリ) /
-`LIVE_RELAY_MAX_BYTES` (VOD の多重化済み segment の合計サイズの上限 (Live は対象外)、既定 10 GiB。VOD の多重化済み segment は idle TTL まで保持するため、新規起動時と、約 15 秒間隔の周期スイープで評価し、超過していれば最終アクセスが最も古いものから停止する。単一動画だけで上限を超える場合はその再生も停止する。周期スイープは idle TTL を過ぎた再公開の削除も行い、起動時には前回プロセスが残したディレクトリを削除する。削除対象は名前が videoId 形式で、中身が再公開の生成ファイルだけのディレクトリに限られ、`LIVE_RELAY_OUT_DIR` 内のそれ以外のエントリには触れない) /
-`LIVE_RELAY_IDLE_TTL_MS` (最終アクセスからの ffmpeg 停止猶予、既定 5 分。視聴者がいなくなった
-Live 配信の ffmpeg プロセスを早めに止めるため、VOD の `MEDIA_CACHE_TTL_MS` より大幅に短い)。
-Live `proxy` では videoId ごとに ffmpeg プロセスが 1 つ常駐し、複数視聴者は同じ再公開ファイル
-(playlist + segment) を fetch するだけなので、視聴者が増えても Backend 側の追加コストは
-静的ファイル配信のリクエスト数のみで済む。
+```json
+{
+  "playlistId": "PLxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "generation": 1,
+  "updatedAt": 1710000000000,
+  "tracks": [{ "position": 0, "title": "Video title" }]
+}
+```
 
-> [!WARNING]
-> **破壊的変更**: VOD `hybrid` モードの未キャッシュ時フォールバック先が `redirect`
-> (`youtube.com` への 302) から `relay` (解決済み HLS master manifest URL への 302、
-> 解決に失敗した場合のみ従来通り `redirect`) に変更された。`hybrid` を使っている既存の
-> デプロイは、この挙動の変化を踏まえて動作確認すること。
+Playlist の情報は要求時に yt-dlp で取得し、`MANIFEST_CACHE_TTL_MS` の間だけメモリに保持します。Playlist の曲順・タイトルはディスクに保存しません。`data/` には Playlist ごとの position 対応表、generation、refresh 状態など (`slots.json`) と、選択した配信方式に応じた動画データを保存します。
 
-## 任意の videoId を直接指定する Endpoint (`GET /video/:videoId`)
+初回取得に失敗して manifest がまだ無い場合は `503` を返します。最後に取得した manifest がある場合、refresh 失敗中もそれを返します。position が未割り当てなら動画 Endpoint は manifest を更新して解決を試みます。
 
-`GET /:playlistId/:position.mp4` と同様の配信方式判定 (`MEDIA_DELIVERY_MODE` /
-`LIVE_DELIVERY_MODE`) を、Playlist/position を経由せず任意の YouTube videoId に対して直接使う
-Endpoint。`GET /video/:videoId` と `GET /video/:videoId.mp4` のどちらの形式でもアクセスできる
-(拡張子は任意)。`playlistId` の allowlist (`config/playlists.json`) を経由しないため、`proxy` /
-`hybrid` モードでは allowlist 外の動画にもアクセスできる点に注意すること。
+管理 Endpoint は `ADMIN_TOKEN` が設定されている場合だけ使えます。リクエストには `Authorization: Bearer <token>` が必要です。Token が未設定の場合、`/admin` は `403` を返します。通常の manifest 要求はキャッシュ TTL に従って自動更新されるため、TTL を待たずに更新する場合に管理 Endpoint を使います。
 
-> [!WARNING]
-> `config/playlists.json` に `playlistId: "video"` を設定しないこと。この Endpoint は
-> `GET /:playlistId/:position.mp4` より前に登録されており、`playlistId` が文字列 `"video"`
-> と一致すると、この Endpoint に奪われ Playlist 経由でアクセスできなくなる。
+## CLI で Playlist を再取得する
 
-Live `proxy` モードの再公開ファイルは `GET /:playlistId/:position/live/:file` とは別に
-`GET /live/:videoId/:file` からも配信される (`relay` モードは YouTube 自体の HLS manifest URL へ
-直接 302 するため、この Endpoint は使わない)。
+サーバーと同じ環境設定を使って `pnpm refresh` を実行します。引数を省略すると、設定済みの Playlist を順番に再取得します。allowlist が無効なら、`DATA_DIR` 直下のディレクトリ名を Playlist ID の候補にします。position state 以外のディレクトリも候補です。そのため、`cache` や `live` を `DATA_DIR` 内に作る設定では allowlist を使ってください。または、それらの保存先を `DATA_DIR` の外へ移してください。ID を指定すると、その Playlist だけを再取得します。
+
+CLI はサーバーとは別プロセスです。position 状態はディスクに反映されます。一方、起動中サーバーの manifest メモリキャッシュは無効になりません。変更が公開 manifest に反映されるのは TTL 切れ後です。すぐに反映するには、認証済みの管理 Endpoint を使ってください。
+
+```bash
+pnpm refresh
+pnpm refresh PLxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+## 動画の配信方式
+
+VOD と Live は別々に設定します。`MEDIA_DELIVERY_MODE` は VOD、`LIVE_DELIVERY_MODE` は配信中の動画に適用されます。どちらも未設定時は `redirect` です。
+
+| 値               | 動作                                                                                                                                   | 必要なもの                                         |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
+| `redirect`       | YouTube の watch URL に HTTP `302` を返す                                                                                              | なし                                               |
+| `relay`          | サーバー側 yt-dlp が解決した HLS を返す URL に `302`。VOD で音声が別 rendition の場合は、要求された segment を ffmpeg で多重化して配信 | yt-dlp。VOD の多重化時は ffmpeg と一時ディスク領域 |
+| `relay-redirect` | relay の解決または準備に失敗した場合、YouTube watch URL に `302`                                                                       | `relay` と同じ                                     |
+| `proxy`          | VOD は動画をダウンロードしてディスクキャッシュから配信。Live は ffmpeg で HLS をローカルに再公開                                       | yt-dlp、ffmpeg、ディスク領域                       |
+| `hybrid`         | VOD 専用。キャッシュ済みなら動画を直接配信し、未キャッシュならダウンロードを始めて relay 相当の応答を返す                              | yt-dlp、ffmpeg、ディスク領域                       |
+
+`hybrid` は Live には設定できません。どちらか一方を `relay-redirect` にする場合、もう一方は `redirect` または `relay-redirect` にしてください。Resolver の失敗は VOD / Live 判定前に起きるため、この組み合わせに制限しています。
+
+`proxy` と `hybrid` は動画データをサーバーへダウンロードして再配信します。運用する前に、対象コンテンツの権利、適用される利用条件、必要なディスク容量とネットワーク帯域を確認してください。
+
+## リバースプロキシ
+
+Nginx などのリバースプロキシを使う場合は、`TRUST_PROXY` をサーバーまでの実際の proxy hop 数に設定してください。既定値は `1` です。Express はこの値を使って `X-Forwarded-For` から接続元を解決します。無条件に信頼する値は使わないでください。
 
 ## Docker
-
-`proxy` / `hybrid` モードは ffmpeg と、自己更新可能な yt-dlp standalone binary を必要とするため、
-Docker Image として提供する。
 
 ```bash
 docker build -t vrchat-ytplaylist-relay .
@@ -126,26 +129,35 @@ docker run -d \
   -p 8787:8787 \
   -v vrchat-ytplaylist-relay-data:/app/data \
   -e MEDIA_DELIVERY_MODE=proxy \
-  -e ADMIN_TOKEN=<secret> \
+  -e ADMIN_TOKEN='<secret>' \
   vrchat-ytplaylist-relay
 ```
 
-- Entrypoint (`docker/entrypoint.sh`) はコンテナ起動時に `yt-dlp -U` を実行し、以後
-  `YTDLP_UPDATE_INTERVAL_HOURS` (既定 24 時間) ごとにバックグラウンドで自己更新し続ける
-  (YouTube 側の抽出ロジック変化への追随が `proxy` / `hybrid` モードの生命線のため)。
-  `YTDLP_AUTO_UPDATE=0` で無効化できる。
-- `/app/data` (`DATA_DIR` / `MEDIA_CACHE_DIR` の既定位置) は Volume 化を推奨する。
-- allowlist (対象 Playlist の絞り込み) を使う場合のみ `-v
-  "$(pwd)/config:/app/config:ro"` で `config/playlists.json` をマウントする。
+`/app/data` は position 状態と VOD キャッシュの保存先です。Live / relay の一時ファイルもここに作成します。このディレクトリを volume に置いてください。allowlist を使う場合は、`config/playlists.json` を `/app/config/playlists.json` に read-only で mount します。
 
-## テスト
+Container entrypoint は既定で起動時に yt-dlp を更新し、その後 `YTDLP_UPDATE_INTERVAL_HOURS` ごとに更新を確認します。`YTDLP_AUTO_UPDATE=0` で自動更新を無効にできます。
+
+## ログ
+
+ログは stdout / stderr に 1 行 1 JSON object で出力します。各行に `timestamp`、`level`、`event`、`message` が入ります。必要に応じて `request_id`、`operation_id`、処理時間、Playlist / video ID なども記録します。HTTP response の `X-Request-Id` はログの `request_id` と一致します。
+
+`/health` と Live / VOD segment 要求は、通常成功時のログを省略します。失敗は記録します。Authorization、Cookie、client IP、request body / query、動画タイトル、完全な media URL は記録しません。ログ sanitizer は既知の認証情報を伏せます。ただし、未知の secret を検出できる保証はありません。機密値をログ field に渡さないでください。
 
 ```bash
-pnpm test                # ユニット / 統合的な軽量テスト (yt-dlp 実行なし)
-pnpm run test:integration  # 実際に yt-dlp / ffmpeg / ネットワークを使う統合テストも含める
-pnpm run typecheck
+docker logs -f vrchat-ytplaylist-relay
+docker logs vrchat-ytplaylist-relay 2>&1 | grep '"event":"playlist.refresh.failed"'
+docker logs vrchat-ytplaylist-relay 2>&1 | grep '"request_id":"<X-Request-Id>"'
 ```
 
-`test:integration` は `RUN_INTEGRATION=1` を設定して `pnpm test` と同じテストファイルを実行し、
-`{ skip: !shouldRun }` で分岐している実 yt-dlp 呼び出しテスト (Playlist 取得・動画ダウンロード・
-`proxy` モードでの Media Endpoint 疎通) も実行する。CI では通常 `pnpm test` のみ実行すればよい。
+ログ field と event の概要は [docs/logging.md](docs/logging.md) を参照してください。
+
+## 開発と検証
+
+```bash
+pnpm test                 # ローカルで完結するテスト
+pnpm run typecheck
+pnpm run lint
+pnpm run test:integration # 実 yt-dlp / ffmpeg / ネットワークを使うテストを含む
+```
+
+統合テストは `RUN_INTEGRATION=1` で有効になります。通常の `pnpm test` は外部サービスを使うケースを skip します。CI は軽量なテストを実行します。
