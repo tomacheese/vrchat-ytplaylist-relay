@@ -64,8 +64,8 @@ cp config/playlists.json.example config/playlists.json
 | `GET`  | `/:playlistId/manifest.json`        | Playlist manifest を返す                                                |
 | `GET`  | `/:playlistId/:position.mp4`        | manifest の position に対応する動画を設定済みの方式で配信する           |
 | `GET`  | `/video/:videoId`                   | Playlist を経由せず YouTube video ID を指定する。末尾の `.mp4` は任意   |
-| `GET`  | `/live/:videoId/:file`              | Live relay が作成した playlist / segment を返す                         |
-| `GET`  | `/:playlistId/:position/live/:file` | Playlist position 経由の relay playlist / segment を返す                |
+| `GET`  | `/live/:videoId/:file`              | video ID で指定した Live / VOD relay の playlist / segment を返す       |
+| `GET`  | `/:playlistId/:position/live/:file` | Playlist position 経由の Live / VOD relay playlist / segment を返す     |
 | `POST` | `/admin/refresh`                    | 既知の全 Playlist を再取得する                                          |
 | `POST` | `/admin/refresh/:playlistId`        | 指定 Playlist を再取得する                                              |
 
@@ -90,7 +90,9 @@ Playlist の情報は要求時に yt-dlp で取得し、`MANIFEST_CACHE_TTL_MS` 
 
 ## CLI で Playlist を再取得する
 
-サーバーと同じ環境設定を使って `pnpm refresh` を実行します。引数を省略すると設定済みの Playlist を順番に再取得します。allowlist を使わない場合は、`data/` に position 状態が保存されている Playlist が対象です。ID を指定すれば 1 件だけ再取得できます。
+サーバーと同じ環境設定を使って `pnpm refresh` を実行します。引数を省略すると設定済みの Playlist を順番に再取得します。allowlist を使わない場合は、`DATA_DIR` 直下のディレクトリ名を Playlist ID の候補として使います。position state 以外のディレクトリも候補になるため、既定の `cache` や `live` が作成される配信設定では allowlist を設定するか、それらの保存先を `DATA_DIR` の外へ移してください。ID を指定すれば 1 件だけ再取得できます。
+
+CLI はサーバーとは別プロセスです。position 状態はディスクへ反映されますが、起動中サーバーの manifest メモリキャッシュは無効になりません。公開 manifest に反映されるのは TTL 切れ後です。即時反映が必要なら認証済みの管理 Endpoint を使ってください。
 
 ```bash
 pnpm refresh

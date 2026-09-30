@@ -4,7 +4,7 @@
 
 This Node.js service fetches YouTube Playlist entries with yt-dlp and exposes a manifest and media routes for VRChat worlds. It does not depend on a specific world-side player implementation.
 
-The manifest is fetched on demand and cached in memory. `src/manifest-store.ts` assigns a persistent, never-reused position to each video ID so existing media URLs keep their meaning as a Playlist changes. Only the position map and refresh status are persisted; Playlist titles and ordering are not.
+The manifest is fetched on demand and cached in memory. `src/manifest-store.ts` assigns a persistent, never-reused position to each video ID so existing media URLs keep their meaning as a Playlist changes. Persisted state contains position mappings and refresh metadata, but not Playlist titles or ordering.
 
 ## Where to look
 

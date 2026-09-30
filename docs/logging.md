@@ -48,6 +48,6 @@ docker logs vrchat-ytplaylist-relay 2>&1 | grep '"event":"http.request.completed
 
 ## 機密情報
 
-Logger は Authorization、Cookie、token、署名など既知の field 名を伏せ、URL の userinfo、query value、fragment、Bearer token も sanitizer の対象にします。`message`、`stack`、`stderr` は最大 4 KiB に制限され、改行や制御文字は JSON 文字列内に escape されます。
+Logger は Authorization、Cookie、token、署名など既知の field 名を伏せ、URL の userinfo、query value、fragment、Bearer token も sanitizer の対象にします。`message`、`stack`、`stderr` は 4,096 文字までを残し、超過時は省略表示を付けます。改行や制御文字は JSON 文字列内に escape されます。
 
 この処理は既知の形式に対する対策です。未知の secret を検出する保証はありません。Authorization header、環境変数、完全な URL、動画タイトルなどを log field に渡さないでください。
