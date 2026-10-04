@@ -196,14 +196,14 @@ test.skipIf(process.platform !== 'linux')(
     const dir = tempDir
     const scriptPath = path.join(dir, 'fake-ytdlp.mjs')
     const pidPath = path.join(dir, 'child.pids')
-    const modulePath = path.resolve('src/ytdlp.ts')
+    const destinationPath = path.join(dir, 'cached.mp4')
     fs.writeFileSync(
       scriptPath,
       `#!/usr/bin/env node
 import fs from 'node:fs'
 import { spawn } from 'node:child_process'
 const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'inherit' })
-fs.appendFileSync(${JSON.stringify(pidPath)}, String(child.pid) + String.fromCharCode(10))
+fs.appendFileSync(process.env.YR_TEST_PID_PATH, String(child.pid) + String.fromCharCode(10))
 setInterval(() => {}, 1000)
 `,
       { mode: 0o755 }
@@ -215,9 +215,17 @@ setInterval(() => {}, 1000)
         '--import',
         'tsx',
         '-e',
-        `import(${JSON.stringify(modulePath)}).then(({ downloadVideo }) => downloadVideo('abcdefghijk', ${JSON.stringify(path.join(dir, 'cached.mp4'))}, { ytdlpPath: ${JSON.stringify(scriptPath)}, timeoutMs: 10000, maxHeight: 1080 }).catch(() => downloadVideo('abcdefghijk', ${JSON.stringify(path.join(dir, 'cached.mp4'))}, { ytdlpPath: ${JSON.stringify(scriptPath)}, timeoutMs: 10000, maxHeight: 1080 }).catch(() => {})))`,
+        `const { downloadVideo } = require('./src/ytdlp.ts'); const destinationPath = process.env.YR_TEST_DESTINATION_PATH; const options = { ytdlpPath: process.env.YR_TEST_SCRIPT_PATH, timeoutMs: 10000, maxHeight: 1080 }; downloadVideo('abcdefghijk', destinationPath, options).catch(() => downloadVideo('abcdefghijk', destinationPath, options).catch(() => {}))`,
       ],
-      { stdio: 'inherit' }
+      {
+        stdio: 'inherit',
+        env: {
+          ...process.env,
+          YR_TEST_PID_PATH: pidPath,
+          YR_TEST_DESTINATION_PATH: destinationPath,
+          YR_TEST_SCRIPT_PATH: scriptPath,
+        },
+      }
     )
 
     try {
