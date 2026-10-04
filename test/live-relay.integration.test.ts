@@ -39,6 +39,7 @@ test.skipIf(!shouldRun)(
       defaultMaxSlots: 100,
       ytdlpTimeoutMs: 60_000,
       manifestCacheTtlMs: 300_000,
+      manifestRetryDelayMs: 30_000,
       mediaDeliveryMode: 'redirect',
       liveDeliveryMode: 'proxy',
       liveRelayOutDir: outDir,

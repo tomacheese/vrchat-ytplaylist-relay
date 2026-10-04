@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, test } from 'vitest'
+import { afterEach, test, vi } from 'vitest'
 import { isPlaylistAllowed, loadConfig } from '../src/config'
 
 let tempDir: string | undefined
@@ -241,4 +241,72 @@ test('loadConfig prefers overrides.trustProxy over TRUST_PROXY', () => {
     trustProxy: 5,
   })
   assert.equal(config.trustProxy, 5)
+})
+
+test('loadConfig rejects malformed and out-of-range numeric environment settings', () => {
+  tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yrp-config-numbers-'))
+  const configPath = path.join(tempDir, 'missing.json')
+  const invalidSettings: [string, string][] = [
+    ['MEDIA_CACHE_MAX_BYTES', '10GB'],
+    ['LIVE_RELAY_MAX_BYTES', 'Infinity'],
+    ['DEFAULT_MAX_SLOTS', 'NaN'],
+    ['DEFAULT_MAX_SLOTS', '0'],
+    ['MEDIA_MAX_HEIGHT', '1080.5'],
+    ['YTDLP_TIMEOUT_MS', '2147483648'],
+    ['MEDIA_DOWNLOAD_TIMEOUT_MS', '0'],
+    ['MANIFEST_CACHE_TTL_MS', '-1'],
+    ['MANIFEST_RETRY_DELAY_MS', '-1'],
+    ['MEDIA_CACHE_TTL_MS', ''],
+    ['LIVE_RELAY_IDLE_TTL_MS', '9007199254740992'],
+    ['TRUST_PROXY', '-1'],
+    ['PORT', '65536'],
+  ]
+  for (const [name, value] of invalidSettings) {
+    try {
+      vi.stubEnv(name, value)
+      assert.throws(() => loadConfig({ configPath }), new RegExp(name))
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  }
+})
+
+test('loadConfig validates numeric overrides and Playlist maxSlots', () => {
+  tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yrp-config-slots-'))
+  const configPath = path.join(tempDir, 'playlists.json')
+  for (const maxSlots of [0, -1, 1.5, '1000', true]) {
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ playlists: [{ playlistId: 'pl1', maxSlots }] })
+    )
+    assert.throws(() => loadConfig({ configPath }), /maxSlots/)
+  }
+  fs.writeFileSync(configPath, JSON.stringify({ playlists: [] }))
+  assert.throws(
+    () => loadConfig({ configPath, defaultMaxSlots: NaN }),
+    /DEFAULT_MAX_SLOTS/
+  )
+  assert.throws(
+    () => loadConfig({ configPath, mediaCacheMaxBytes: Infinity }),
+    /MEDIA_CACHE_MAX_BYTES/
+  )
+  assert.throws(
+    () =>
+      loadConfig({
+        configPath,
+        mediaCacheMaxBytes: true,
+      } as unknown as Parameters<typeof loadConfig>[0]),
+    /MEDIA_CACHE_MAX_BYTES/
+  )
+  const config = loadConfig({
+    configPath,
+    port: 0,
+    trustProxy: 0,
+    manifestCacheTtlMs: 0,
+    manifestRetryDelayMs: 0,
+    mediaCacheMaxBytes: 0,
+  })
+  assert.equal(config.port, 0)
+  assert.equal(config.trustProxy, 0)
+  assert.equal(config.mediaCacheMaxBytes, 0)
 })

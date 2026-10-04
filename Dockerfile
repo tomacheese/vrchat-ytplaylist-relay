@@ -33,7 +33,13 @@ RUN apt-get update \
 # `yt-dlp -U` による自己更新も standalone binary 同士の差し替えとして完結する。
 # バージョンは Renovate (renovate.json の customManagers) で自動更新するため latest ではなく固定タグを使う。
 ARG YTDLP_VERSION=2026.08.19
-RUN curl -fL -o /usr/local/bin/yt-dlp "https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}/yt-dlp_linux" \
+ARG TARGETARCH
+RUN case "${TARGETARCH}" in \
+      amd64) ytdlp_binary=yt-dlp_linux ;; \
+      arm64) ytdlp_binary=yt-dlp_linux_aarch64 ;; \
+      *) echo "Unsupported architecture: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac \
+  && curl -fL -o /usr/local/bin/yt-dlp "https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}/${ytdlp_binary}" \
   && chmod a+rx /usr/local/bin/yt-dlp
 
 COPY --from=deno /deno /usr/local/bin/deno

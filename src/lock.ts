@@ -18,6 +18,7 @@ export class KeyedMutex {
       return await task()
     } finally {
       resolveTail()
+      if (this.tails.get(key) === thisTail) this.tails.delete(key)
     }
   }
 }

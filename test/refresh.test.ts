@@ -40,6 +40,7 @@ function baseConfig(
     defaultMaxSlots: 100,
     ytdlpTimeoutMs: 1000,
     manifestCacheTtlMs: 60_000,
+    manifestRetryDelayMs: 30_000,
     mediaDeliveryMode: 'redirect',
     liveDeliveryMode: 'redirect',
     liveRelayOutDir: tempDataDir(),
@@ -380,4 +381,117 @@ test('resolveVideoIdForPosition surfaces the persisted lastError when a recent r
     error: 'network unreachable',
     reason: 'refresh_failed',
   })
+})
+
+test('stale manifests survive failure metadata persistence errors and retry backoff still applies', async () => {
+  const playlistId = 'pl-failure-record-readonly'
+  const config = baseConfig(playlistId)
+  const blocker = path.join(config.dataDir, 'file')
+  fs.writeFileSync(blocker, 'not a directory')
+  config.dataDir = path.join(blocker, 'state')
+  const stale = manifest(playlistId)
+  primeManifestCacheForTests(playlistId, stale, Date.now() - 120_000)
+  const errorSpy = vi
+    .spyOn(console, 'error')
+    .mockImplementation(() => undefined)
+  const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+  try {
+    const first = await getManifestForClient(config, playlistId)
+    const second = await getManifestForClient(config, playlistId)
+    assert.deepEqual(first.manifest, stale)
+    assert.deepEqual(second, first)
+    const failures = errorSpy.mock.calls.map(([line]) =>
+      parseLogRecord(line as string)
+    )
+    assert.equal(
+      failures.filter((record) => record.event === 'ytdlp.operation.failed')
+        .length,
+      1
+    )
+    const warnings = warnSpy.mock.calls.map(([line]) =>
+      parseLogRecord(line as string)
+    )
+    assert.ok(
+      warnings.some(
+        (record) => record.event === 'playlist.refresh.failure_record_failed'
+      )
+    )
+  } finally {
+    vi.restoreAllMocks()
+    fs.rmSync(path.dirname(blocker), { recursive: true, force: true })
+  }
+})
+
+test('public manifest failures back off, retry after the deadline, and allow explicit refresh to recover', async () => {
+  const playlistId = 'pl-retry-backoff'
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'yrp-retry-backoff-'))
+  const scriptPath = path.join(dir, 'fake-ytdlp.mjs')
+  const callsPath = path.join(dir, 'calls')
+  const readyPath = path.join(dir, 'ready')
+  fs.writeFileSync(
+    scriptPath,
+    String.raw`#!/usr/bin/env node
+import fs from 'node:fs'
+fs.appendFileSync(${JSON.stringify(callsPath)}, 'called\n')
+if (!fs.existsSync(${JSON.stringify(readyPath)})) process.exit(1)
+console.log(JSON.stringify({entries: [{id: 'abcdefghijk', title: 'Recovered'}]}))
+`,
+    { mode: 0o755 }
+  )
+  const config = baseConfig(playlistId, {
+    dataDir: dir,
+    ytdlpPath: scriptPath,
+    manifestRetryDelayMs: 1000,
+  })
+  const stale = manifest(playlistId)
+  primeManifestCacheForTests(playlistId, stale, Date.now() - 120_000)
+  vi.useFakeTimers({ toFake: ['Date'] })
+  const countCalls = () =>
+    fs.readFileSync(callsPath, 'utf8').trim().split('\n').length
+  try {
+    const first = await getManifestForClient(config, playlistId)
+    assert.deepEqual(first.manifest, stale)
+    assert.ok(first.error)
+    await Promise.all([
+      getManifestForClient(config, playlistId),
+      getManifestForClient(config, playlistId),
+    ])
+    assert.equal(countCalls(), 1)
+    vi.setSystemTime(Date.now() + 1001)
+    await getManifestForClient(config, playlistId)
+    assert.equal(countCalls(), 2)
+    fs.writeFileSync(readyPath, '')
+    const explicit = await refreshPlaylist(config, playlistId)
+    assert.equal(explicit.ok, true)
+    assert.equal(countCalls(), 3)
+    const recovered = await getManifestForClient(config, playlistId)
+    assert.equal(recovered.error, undefined)
+    assert.equal(recovered.manifest?.tracks[0].title, 'Recovered')
+    assert.equal(countCalls(), 3)
+  } finally {
+    vi.useRealTimers()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('manifest retry backoff also suppresses repeated fetches without a cached manifest', async () => {
+  const playlistId = 'pl-no-cache-backoff'
+  const config = baseConfig(playlistId)
+  const output = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+  try {
+    const first = await getManifestForClient(config, playlistId)
+    const second = await getManifestForClient(config, playlistId)
+    assert.equal(first.manifest, null)
+    assert.deepEqual(second, first)
+    const records = output.mock.calls.map(([line]) =>
+      parseLogRecord(line as string)
+    )
+    assert.equal(
+      records.filter((record) => record.event === 'ytdlp.operation.failed')
+        .length,
+      1
+    )
+  } finally {
+    output.mockRestore()
+  }
 })

@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -28,6 +28,134 @@ interface SpawnResult {
   stderr: string
 }
 
+interface OutputLimit {
+  directory: string
+  maxBytes: number
+}
+
+function directorySize(directory: string): number {
+  return fs
+    .readdirSync(directory, { withFileTypes: true })
+    .reduce((size, entry) => {
+      if (!entry.isFile()) return size
+      try {
+        return size + fs.statSync(path.join(directory, entry.name)).size
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return size
+        throw error
+      }
+    }, 0)
+}
+
+/** yt-dlp が起動した ffmpeg / JS runtime も同時に終了させる。 */
+function killProcessTree(
+  child: ChildProcess,
+  complete: (error?: Error) => void
+): void {
+  if (child.pid === undefined) {
+    complete()
+    return
+  }
+  if (process.platform === 'win32') {
+    const killer = spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], {
+      stdio: 'ignore',
+    })
+    let completed = false
+    const timer = setTimeout(() => {
+      if (completed) return
+      completed = true
+      killer.kill('SIGKILL')
+      complete(new Error('Timed out terminating yt-dlp process tree'))
+    }, 5000)
+    const finish = (error?: Error): void => {
+      if (completed) return
+      completed = true
+      clearTimeout(timer)
+      complete(error)
+    }
+    killer.once('error', finish)
+    killer.once('close', (code) => {
+      if (code === 0) finish()
+      else finish(new Error('Failed to terminate yt-dlp process tree'))
+    })
+    return
+  }
+  try {
+    process.kill(-child.pid, 'SIGKILL')
+    complete()
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ESRCH') complete()
+    else complete(error instanceof Error ? error : new Error(String(error)))
+  }
+}
+
+const activeChildren = new Set<ChildProcess>()
+const terminationSignals: NodeJS.Signals[] = ['SIGINT', 'SIGTERM']
+let terminationSignal: NodeJS.Signals | null = null
+let pendingTerminations = 0
+
+function terminateProcessTree(
+  child: ChildProcess,
+  details: Record<string, unknown>
+): void {
+  pendingTerminations += 1
+  killProcessTree(child, (error) => {
+    if (error) {
+      logger.error(
+        'ytdlp.operation.failed',
+        'Failed to terminate yt-dlp process tree',
+        { operation: 'ytdlp.run', ...details, error }
+      )
+      child.kill('SIGKILL')
+    }
+    pendingTerminations -= 1
+  })
+}
+
+function handleTermination(signal: NodeJS.Signals): void {
+  terminationSignal ??= signal
+  for (const child of activeChildren) {
+    terminateProcessTree(child, {})
+  }
+}
+
+function finishTermination(): void {
+  if (terminationSignal === null || activeChildren.size > 0) return
+  if (pendingTerminations > 0) {
+    setTimeout(finishTermination, 10)
+    return
+  }
+  const signal = terminationSignal
+  for (const terminationSignalName of terminationSignals) {
+    process.removeListener(terminationSignalName, handleTermination)
+  }
+  setImmediate(() => {
+    terminationSignal = null
+    process.kill(process.pid, signal)
+  })
+}
+
+function trackChild(child: ChildProcess): void {
+  if (activeChildren.size === 0) {
+    for (const signal of terminationSignals) {
+      process.on(signal, handleTermination)
+    }
+  }
+  activeChildren.add(child)
+  child.once('close', () => {
+    activeChildren.delete(child)
+    if (activeChildren.size === 0) {
+      if (terminationSignal === null) {
+        for (const signal of terminationSignals) {
+          process.removeListener(signal, handleTermination)
+        }
+      } else {
+        finishTermination()
+      }
+    }
+  })
+}
+
 /**
  * yt-dlp を子プロセスとして起動し、Timeout 付きで標準出力・標準エラー出力を回収する共通処理。
  * `contextLabel` はエラーメッセージに埋め込む対象の説明 (例: "playlist xxx", "video yyy")。
@@ -35,39 +163,81 @@ interface SpawnResult {
 function runYtdlp(
   args: string[],
   options: RunYtdlpOptions,
-  contextLabel: string
+  contextLabel: string,
+  outputLimit?: OutputLimit
 ): Promise<SpawnResult> {
   const startedAt = performance.now()
   const operationId = logger.newOperationId()
   const [targetType, targetId] = contextLabel.split(' ', 2)
   return new Promise((resolve, reject) => {
+    if (terminationSignal !== null) {
+      reject(
+        new YtdlpError(
+          `Cannot start yt-dlp during ${terminationSignal}`,
+          '',
+          'ESHUTDOWN'
+        )
+      )
+      return
+    }
     const child = spawn(options.ytdlpPath, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
+      detached: process.platform !== 'win32',
     })
+    trackChild(child)
 
     let stdout = ''
     let stderr = ''
     let settled = false
+    let operationError: YtdlpError | undefined
 
     const timer = setTimeout(() => {
       if (settled) return
-      settled = true
-      child.kill('SIGKILL')
-      const error = new YtdlpError(
+      operationError = new YtdlpError(
         `yt-dlp timed out after ${options.timeoutMs}ms for ${contextLabel}`,
         stderr,
         'ETIMEDOUT'
       )
-      logger.error('ytdlp.operation.failed', 'yt-dlp operation failed', {
-        operation: 'ytdlp.run',
+      terminateProcessTree(child, {
         operation_id: operationId,
         target_type: targetType,
         target_id: targetId,
-        duration_ms: Math.round(performance.now() - startedAt),
-        error,
       })
-      reject(error)
     }, options.timeoutMs)
+
+    const sizeMonitor = outputLimit
+      ? setInterval(() => {
+          if (settled || operationError) return
+          let size: number
+          try {
+            size = directorySize(outputLimit.directory)
+          } catch (error) {
+            operationError = new YtdlpError(
+              'Failed to inspect yt-dlp temporary output',
+              stderr,
+              'EIO'
+            )
+            operationError.cause = error
+            terminateProcessTree(child, {
+              operation_id: operationId,
+              target_type: targetType,
+              target_id: targetId,
+            })
+            return
+          }
+          if (size <= outputLimit.maxBytes) return
+          operationError = new YtdlpError(
+            `Video exceeds the cache size limit (${outputLimit.maxBytes} bytes)`,
+            stderr,
+            'EFBIG'
+          )
+          terminateProcessTree(child, {
+            operation_id: operationId,
+            target_type: targetType,
+            target_id: targetId,
+          })
+        }, 25)
+      : undefined
 
     child.stdout.on('data', (chunk: Buffer) => {
       stdout += chunk.toString('utf8')
@@ -80,6 +250,7 @@ function runYtdlp(
       if (settled) return
       settled = true
       clearTimeout(timer)
+      if (sizeMonitor) clearInterval(sizeMonitor)
       const errorCode = (err as NodeJS.ErrnoException).code
       const error = new YtdlpError(
         `Failed to spawn yt-dlp (${options.ytdlpPath}): ${err.message}`,
@@ -101,6 +272,20 @@ function runYtdlp(
       if (settled) return
       settled = true
       clearTimeout(timer)
+      if (sizeMonitor) clearInterval(sizeMonitor)
+
+      if (operationError) {
+        logger.error('ytdlp.operation.failed', 'yt-dlp operation failed', {
+          operation: 'ytdlp.run',
+          operation_id: operationId,
+          target_type: targetType,
+          target_id: targetId,
+          duration_ms: Math.round(performance.now() - startedAt),
+          error: operationError,
+        })
+        reject(operationError)
+        return
+      }
 
       if (code !== 0) {
         const error = new YtdlpError(
@@ -199,6 +384,8 @@ export async function resolveVideoJson(
 export interface DownloadVideoOptions extends RunYtdlpOptions {
   /** ダウンロードする動画の最大高さ (px)。これ以下で最高画質のフォーマットを選ぶ。 */
   maxHeight: number
+  /** 上限超過時は既存の配信用ファイルを置換せずに失敗させる。 */
+  maxBytes?: number
 }
 
 /**
@@ -238,13 +425,35 @@ export async function downloadVideo(
       url,
     ]
 
-    await runYtdlp(args, options, `video ${videoId}`)
+    if (options.maxBytes !== undefined) {
+      args.unshift('--max-filesize', String(options.maxBytes))
+    }
+
+    await runYtdlp(
+      args,
+      options,
+      `video ${videoId}`,
+      options.maxBytes === undefined
+        ? undefined
+        : { directory: tmpDir, maxBytes: options.maxBytes }
+    )
 
     const producedPath = path.join(tmpDir, 'video.mp4')
     if (!fs.existsSync(producedPath)) {
       throw new YtdlpError(
         `yt-dlp did not produce an mp4 file for video ${videoId}`,
         ''
+      )
+    }
+
+    if (
+      options.maxBytes !== undefined &&
+      fs.statSync(producedPath).size > options.maxBytes
+    ) {
+      throw new YtdlpError(
+        `Video exceeds the cache size limit (${options.maxBytes} bytes)`,
+        '',
+        'EFBIG'
       )
     }
 

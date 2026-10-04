@@ -67,6 +67,7 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     defaultMaxSlots: 100,
     ytdlpTimeoutMs: 1000,
     manifestCacheTtlMs: 60_000,
+    manifestRetryDelayMs: 30_000,
     mediaDeliveryMode: 'redirect',
     liveDeliveryMode: 'proxy',
     liveRelayOutDir: outDirRoot ?? '',
