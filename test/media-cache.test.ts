@@ -8,6 +8,7 @@ import type { AppConfig } from '../src/config'
 import { logger } from '../src/logger'
 import {
   getFreshOrStale,
+  getOrDownload,
   peekFreshCache,
   peekStaleCache,
   prefetchAll,
@@ -66,6 +67,7 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     defaultMaxSlots: 100,
     ytdlpTimeoutMs: 1000,
     manifestCacheTtlMs: 60_000,
+    manifestRetryDelayMs: 30_000,
     mediaDeliveryMode: 'hybrid',
     liveDeliveryMode: 'redirect',
     liveRelayOutDir: cacheDir ?? '',
@@ -396,3 +398,52 @@ test('prefetchAll gives up after the retry also fails on a transient error', asy
   )
   warnSpy.mockRestore()
 }, 10_000)
+
+test('getOrDownload rejects a video larger than the cache budget while retaining existing cache entries', async () => {
+  cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yrp-cache-limit-'))
+  const { scriptPath } = makeFakeYtdlp(cacheDir, {
+    failMessage: '',
+    succeedAfter: 1,
+  })
+  seedCacheEntry(cacheDir, 'existing', Date.now())
+  const config = makeConfig({ ytdlpPath: scriptPath, mediaCacheMaxBytes: 1 })
+  await assert.rejects(
+    getOrDownload(config, 'newvideo'),
+    /exceeds the cache size limit/
+  )
+  assert.equal(
+    fs.readFileSync(path.join(cacheDir, 'existing.mp4'), 'utf8'),
+    'dummy video bytes'
+  )
+  assert.equal(fs.existsSync(path.join(cacheDir, 'newvideo.mp4')), false)
+  assert.equal(fs.existsSync(path.join(cacheDir, 'newvideo.meta.json')), false)
+})
+
+test('getOrDownload serializes temporary fills across video IDs in one cache directory', async () => {
+  cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yrp-cache-serial-'))
+  const scriptPath = path.join(cacheDir, 'serial-ytdlp.mjs')
+  const activePath = path.join(cacheDir, 'download.active')
+  const overlapPath = path.join(cacheDir, 'download.overlap')
+  fs.writeFileSync(
+    scriptPath,
+    `#!/usr/bin/env node
+import fs from 'node:fs'
+if (fs.existsSync(${JSON.stringify(activePath)})) fs.writeFileSync(${JSON.stringify(overlapPath)}, 'overlap')
+fs.writeFileSync(${JSON.stringify(activePath)}, '')
+const args = process.argv.slice(2)
+const template = args[args.indexOf('-o') + 1]
+fs.writeFileSync(template.replace('%(ext)s', 'mp4'), 'dummy video bytes')
+setTimeout(() => { fs.rmSync(${JSON.stringify(activePath)}, { force: true }) }, 100)
+`
+  )
+  fs.chmodSync(scriptPath, 0o755)
+  const config = makeConfig({
+    mediaCacheDir: cacheDir,
+    ytdlpPath: scriptPath,
+  })
+  await Promise.all([
+    getOrDownload(config, 'video-one'),
+    getOrDownload(config, 'video-two'),
+  ])
+  assert.equal(fs.existsSync(overlapPath), false)
+})

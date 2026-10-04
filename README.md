@@ -31,6 +31,8 @@ pnpm start
 
 既定の待ち受けポートは `8787` です。`.env` は省略できます。設定の全項目と既定値は [.env.example](.env.example) にあります。
 
+数値設定は単位を付けない整数で指定してください。不正な値、負数、範囲外の値は起動時にエラーになります。`PORT` は `0`～`65535`、`DEFAULT_MAX_SLOTS` と Playlist ごとの `maxSlots`、`MEDIA_MAX_HEIGHT` は正の整数です。timeout は `1`～`2147483647` ms、それ以外の期間・容量・proxy hop 数は `0` 以上の安全な整数を指定します。
+
 ## Playlist を制限する
 
 `config/playlists.json` が存在しない場合、Playlist allowlist は無効です。YouTube の Playlist ID を指定すれば利用できます。
@@ -86,6 +88,8 @@ Playlist の情報は要求時に yt-dlp で取得し、`MANIFEST_CACHE_TTL_MS` 
 
 初回取得に失敗して manifest がまだ無い場合は `503` を返します。最後に取得した manifest がある場合、refresh 失敗中もそれを返します。position が未割り当てなら動画 Endpoint は manifest を更新して解決を試みます。
 
+取得に失敗した Playlist は、`MANIFEST_RETRY_DELAY_MS` (既定 `30000` ms) の間、公開 manifest 要求から再取得しません。その間は直前の manifest を返し、キャッシュが無ければ `503` を返します。管理 Endpoint と CLI の明示的な refresh は待機期間中でも実行します。失敗情報をディスクへ保存できない場合も、メモリ上の manifest を継続して返します。
+
 管理 Endpoint は `ADMIN_TOKEN` が設定されている場合だけ使えます。リクエストには `Authorization: Bearer <token>` が必要です。Token が未設定の場合、`/admin` は `403` を返します。通常の manifest 要求はキャッシュ TTL に従って自動更新されるため、TTL を待たずに更新する場合に管理 Endpoint を使います。
 
 ## CLI で Playlist を再取得する
@@ -113,6 +117,8 @@ VOD と Live は別々に設定します。`MEDIA_DELIVERY_MODE` は VOD、`LIVE
 
 `hybrid` は Live には設定できません。どちらか一方を `relay-redirect` にする場合、もう一方は `redirect` または `relay-redirect` にしてください。Resolver の失敗は VOD / Live 判定前に起きるため、この組み合わせに制限しています。
 
+`proxy` と `hybrid` は完成済みの VOD キャッシュを動画情報の再解決前に配信します。TTL 切れでも古いファイルを返し、バックグラウンドで更新します。更新失敗時は古いファイルを保持します。動画 1 本が `MEDIA_CACHE_MAX_BYTES` を超える場合はダウンロードを失敗として扱い、既存ファイルを置き換えません。ダウンロード中は yt-dlp のサイズ指定と一時ファイルの監視で上限超過を止めます。監視間隔中に一時ファイルが上限を超える場合があります。
+
 `proxy` と `hybrid` は動画データをサーバーへダウンロードして再配信します。運用する前に、対象コンテンツの権利、適用される利用条件、必要なディスク容量とネットワーク帯域を確認してください。
 
 ## リバースプロキシ
@@ -136,6 +142,8 @@ docker run -d \
 `/app/data` は position 状態と VOD キャッシュの保存先です。Live / relay の一時ファイルもここに作成します。このディレクトリを volume に置いてください。allowlist を使う場合は、`config/playlists.json` を `/app/config/playlists.json` に read-only で mount します。
 
 Container entrypoint は既定で起動時に yt-dlp を更新し、その後 `YTDLP_UPDATE_INTERVAL_HOURS` ごとに更新を確認します。`YTDLP_AUTO_UPDATE=0` で自動更新を無効にできます。
+
+Docker image は `linux/amd64` と `linux/arm64` に対応し、それぞれの CPU 向け yt-dlp を含みます。同一プロセス内では cache directory ごとに同時ダウンロードを 1 件に制限します。yt-dlp の timeout 時は子プロセスも終了させ、終了確認後に一時ダウンロードファイルを削除します。
 
 ## ログ
 

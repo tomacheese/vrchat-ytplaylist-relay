@@ -44,6 +44,26 @@ interface CacheEntry {
 /** メモリ上の Manifest キャッシュ。Process 再起動でクリアされる。 */
 const manifestCache = new Map<string, CacheEntry>()
 
+const recentFailures = new Map<string, { retryAt: number; error: string }>()
+const recentFailureLimit = 256
+
+function failureKey(config: AppConfig, playlistId: string): string {
+  return `${config.dataDir}\0${playlistId}`
+}
+
+/** 一度だけ要求された不正な Playlist の失敗も無期限には保持しない。 */
+function pruneRecentFailures(): void {
+  const now = Date.now()
+  for (const [key, failure] of recentFailures) {
+    if (failure.retryAt <= now) recentFailures.delete(key)
+  }
+  while (recentFailures.size > recentFailureLimit) {
+    const oldest = recentFailures.keys().next().value
+    if (oldest === undefined) break
+    recentFailures.delete(oldest)
+  }
+}
+
 function startRelayWarmups(config: AppConfig): void {
   while (
     activeRelayWarmups < relayWarmupConcurrency &&
@@ -169,6 +189,7 @@ function runRefresh(
           )
           persistSlotState(config.dataDir, state)
           manifestCache.set(playlistId, { manifest, fetchedAt: now })
+          recentFailures.delete(failureKey(config, playlistId))
           logger.info(
             'playlist.refresh.completed',
             'Playlist refresh completed',
@@ -218,7 +239,27 @@ function runRefresh(
             duration_ms: Math.round(performance.now() - startedAt),
             error: err instanceof Error ? err : new Error(message),
           })
-          recordFailure(config.dataDir, playlistId, maxSlots, message, now)
+          const failedAt = Date.now()
+          recentFailures.set(failureKey(config, playlistId), {
+            retryAt: failedAt + config.manifestRetryDelayMs,
+            error: message,
+          })
+          pruneRecentFailures()
+          try {
+            recordFailure(
+              config.dataDir,
+              playlistId,
+              maxSlots,
+              message,
+              failedAt
+            )
+          } catch (recordError) {
+            logger.warn(
+              'playlist.refresh.failure_record_failed',
+              'Failed to persist playlist refresh failure',
+              { playlist_id: playlistId, error: recordError }
+            )
+          }
           return { playlistId, ok: false, error: message }
         }
       }
@@ -306,6 +347,12 @@ export async function getManifestForClient(
   const cached = manifestCache.get(playlistId)
   if (cached && Date.now() - cached.fetchedAt < config.manifestCacheTtlMs) {
     return { manifest: cached.manifest }
+  }
+
+  pruneRecentFailures()
+  const failure = recentFailures.get(failureKey(config, playlistId))
+  if (failure) {
+    return { manifest: cached?.manifest ?? null, error: failure.error }
   }
 
   const result = await refreshPlaylist(config, playlistId)

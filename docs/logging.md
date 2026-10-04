@@ -36,6 +36,7 @@ docker logs vrchat-ytplaylist-relay 2>&1 | grep '"event":"http.request.completed
 | -------------------------------------------------------- | ------------------------------------- |
 | `playlist.refresh.completed` / `playlist.refresh.failed` | Playlist の取得と position 状態の更新 |
 | `playlist.refresh.cache_served`                          | メモリ上の manifest を返した          |
+| `playlist.refresh.failure_record_failed`                 | refresh 失敗情報の永続化に失敗した    |
 | `media.delivery.completed` / `media.delivery.failed`     | 動画配信 request の結果               |
 | `media.delivery.fallback`                                | relay 等から別の応答へ切り替えた      |
 | `media.cache.downloaded` / `media.cache.download_failed` | VOD のダウンロード結果                |

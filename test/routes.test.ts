@@ -64,6 +64,7 @@ const config: AppConfig = {
   // テスト中に GET /manifest.json 経由で本物の yt-dlp が起動されないよう、TTL を長めに取り
   // メモリキャッシュを primeManifestCacheForTests() で直接投入する。
   manifestCacheTtlMs: 60_000,
+  manifestRetryDelayMs: 30_000,
   mediaDeliveryMode: 'redirect',
   liveDeliveryMode: 'redirect',
   liveRelayOutDir: '',
@@ -527,6 +528,9 @@ test('GET /video/:videoId.mp4 in relay mode remuxes a VOD master via the live re
 })
 
 test('GET /video/:videoId.mp4 in proxy mode serves cached bytes directly (shares the videoId-keyed cache with the Playlist/position endpoint)', async () => {
+  vi.mocked(resolveVideoInfo).mockRejectedValue(
+    new Error('Resolver unavailable')
+  )
   const proxyDataDir = fs.mkdtempSync(
     path.join(os.tmpdir(), 'yrp-route-test-video-proxy-')
   )
@@ -1008,7 +1012,7 @@ test('GET /:playlistId/:position.mp4 with a live video in proxy mode redirects t
   }
 })
 
-test('GET /:playlistId/:position.mp4 calls resolveVideoInfo even when mediaDeliveryMode === liveDeliveryMode === "proxy" (proxy is never skipped)', async () => {
+test('GET /:playlistId/:position.mp4 resolves live metadata on a cache miss when both delivery modes are "proxy"', async () => {
   const proxySameModeDataDir = fs.mkdtempSync(
     path.join(os.tmpdir(), 'yrp-route-test-proxy-same-mode-')
   )
@@ -1294,6 +1298,9 @@ test('GET /:playlistId/:position.mp4 in hybrid mode falls back to a YouTube redi
 })
 
 test('GET /:playlistId/:position.mp4 in hybrid mode serves cached bytes directly when fresh', async () => {
+  vi.mocked(resolveVideoInfo).mockRejectedValue(
+    new Error('Resolver unavailable')
+  )
   const hybridDataDir = fs.mkdtempSync(
     path.join(os.tmpdir(), 'yrp-route-test-hybrid-cached-')
   )
@@ -1353,6 +1360,9 @@ test('GET /:playlistId/:position.mp4 in hybrid mode serves cached bytes directly
 })
 
 test('GET /:playlistId/:position.mp4 in proxy mode serves stale cached bytes directly instead of blocking on re-download', async () => {
+  vi.mocked(resolveVideoInfo).mockRejectedValue(
+    new Error('Resolver unavailable')
+  )
   const proxyDataDir = fs.mkdtempSync(
     path.join(os.tmpdir(), 'yrp-route-test-proxy-stale-')
   )
@@ -1415,6 +1425,9 @@ test('GET /:playlistId/:position.mp4 in proxy mode serves stale cached bytes dir
 })
 
 test('GET /:playlistId/:position.mp4 in hybrid mode serves stale cached bytes directly instead of falling back to redirect', async () => {
+  vi.mocked(resolveVideoInfo).mockRejectedValue(
+    new Error('Resolver unavailable')
+  )
   const hybridDataDir = fs.mkdtempSync(
     path.join(os.tmpdir(), 'yrp-route-test-hybrid-stale-')
   )

@@ -253,6 +253,18 @@ export function resolveAndServe(
         }
       })
 
+      if (
+        config.mediaDeliveryMode === 'proxy' ||
+        config.mediaDeliveryMode === 'hybrid'
+      ) {
+        const cachedPath = getFreshOrStale(config, videoId)
+        if (cachedPath) {
+          isLive = false
+          res.sendFile(path.resolve(cachedPath))
+          return
+        }
+      }
+
       const skipLiveCheck =
         config.mediaDeliveryMode === config.liveDeliveryMode &&
         (config.mediaDeliveryMode === 'redirect' ||

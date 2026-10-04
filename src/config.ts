@@ -14,6 +14,8 @@ export interface AppConfig {
   ytdlpTimeoutMs: number
   /** Client からの GET /:playlistId/manifest.json をこの期間 (ms) はメモリキャッシュで応答し、yt-dlp を再実行しない。 */
   manifestCacheTtlMs: number
+  /** Manifest の取得失敗後、公開要求からの再試行を待つ期間 (ms)。 */
+  manifestRetryDelayMs: number
   /**
    * Media Endpoint (`GET /:playlistId/:position.mp4`) の配信方式。
    * - "redirect": 従来通り youtube.com へ 302 Redirect するだけ (既定値)。
@@ -156,6 +158,27 @@ function readLiveDeliveryMode(
   return raw
 }
 
+/** 数値設定は、比較や timer に渡す前に範囲まで検証する。 */
+function readInteger(
+  name: string,
+  value: string | number | undefined,
+  fallback: number,
+  min: number,
+  max = Number.MAX_SAFE_INTEGER
+): number {
+  const raw = value ?? fallback
+  const parsed =
+    typeof raw === 'number'
+      ? raw
+      : typeof raw === 'string' && raw.trim() !== ''
+        ? Number(raw)
+        : NaN
+  if (!Number.isSafeInteger(parsed) || parsed < min || parsed > max) {
+    throw new Error(`${name} must be an integer between ${min} and ${max}`)
+  }
+  return parsed
+}
+
 export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
   const configPath =
     overrides.configPath ?? process.env.CONFIG_PATH ?? './config/playlists.json'
@@ -177,8 +200,26 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     )
   }
 
+  const playlists = overrides.playlists ?? serverConfig.playlists
+  for (const [index, entry] of playlists.entries()) {
+    if (entry.maxSlots === undefined) {
+      continue
+    }
+
+    if (typeof entry.maxSlots !== 'number') {
+      throw new TypeError(`playlists[${index}].maxSlots must be a number`)
+    }
+    readInteger(`playlists[${index}].maxSlots`, entry.maxSlots, 1000, 1)
+  }
+
   return {
-    port: overrides.port ?? Number(process.env.PORT ?? 8787),
+    port: readInteger(
+      'PORT',
+      overrides.port ?? process.env.PORT,
+      8787,
+      0,
+      65_535
+    ),
     configPath: resolvedConfigPath,
     dataDir: path.resolve(
       overrides.dataDir ?? process.env.DATA_DIR ?? './data'
@@ -189,15 +230,31 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
       // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing
       (process.env.ADMIN_TOKEN?.trim() || null),
     ytdlpPath: overrides.ytdlpPath ?? process.env.YTDLP_PATH ?? 'yt-dlp',
-    defaultMaxSlots:
-      overrides.defaultMaxSlots ??
-      Number(process.env.DEFAULT_MAX_SLOTS ?? 1000),
-    ytdlpTimeoutMs:
-      overrides.ytdlpTimeoutMs ??
-      Number(process.env.YTDLP_TIMEOUT_MS ?? 60_000),
-    manifestCacheTtlMs:
-      overrides.manifestCacheTtlMs ??
-      Number(process.env.MANIFEST_CACHE_TTL_MS ?? 300_000),
+    defaultMaxSlots: readInteger(
+      'DEFAULT_MAX_SLOTS',
+      overrides.defaultMaxSlots ?? process.env.DEFAULT_MAX_SLOTS,
+      1000,
+      1
+    ),
+    ytdlpTimeoutMs: readInteger(
+      'YTDLP_TIMEOUT_MS',
+      overrides.ytdlpTimeoutMs ?? process.env.YTDLP_TIMEOUT_MS,
+      60_000,
+      1,
+      2_147_483_647
+    ),
+    manifestCacheTtlMs: readInteger(
+      'MANIFEST_CACHE_TTL_MS',
+      overrides.manifestCacheTtlMs ?? process.env.MANIFEST_CACHE_TTL_MS,
+      300_000,
+      0
+    ),
+    manifestRetryDelayMs: readInteger(
+      'MANIFEST_RETRY_DELAY_MS',
+      overrides.manifestRetryDelayMs ?? process.env.MANIFEST_RETRY_DELAY_MS,
+      30_000,
+      0
+    ),
     mediaDeliveryMode,
     liveDeliveryMode,
     liveRelayOutDir: path.resolve(
@@ -205,28 +262,53 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
         process.env.LIVE_RELAY_OUT_DIR ??
         './data/live'
     ),
-    liveRelayIdleTtlMs:
-      overrides.liveRelayIdleTtlMs ??
-      Number(process.env.LIVE_RELAY_IDLE_TTL_MS ?? 5 * 60 * 1000),
-    liveRelayMaxBytes:
-      overrides.liveRelayMaxBytes ??
-      Number(process.env.LIVE_RELAY_MAX_BYTES ?? 10 * 1024 * 1024 * 1024),
-    mediaMaxHeight:
-      overrides.mediaMaxHeight ?? Number(process.env.MEDIA_MAX_HEIGHT ?? 1080),
+    liveRelayIdleTtlMs: readInteger(
+      'LIVE_RELAY_IDLE_TTL_MS',
+      overrides.liveRelayIdleTtlMs ?? process.env.LIVE_RELAY_IDLE_TTL_MS,
+      5 * 60 * 1000,
+      0
+    ),
+    liveRelayMaxBytes: readInteger(
+      'LIVE_RELAY_MAX_BYTES',
+      overrides.liveRelayMaxBytes ?? process.env.LIVE_RELAY_MAX_BYTES,
+      10 * 1024 * 1024 * 1024,
+      0
+    ),
+    mediaMaxHeight: readInteger(
+      'MEDIA_MAX_HEIGHT',
+      overrides.mediaMaxHeight ?? process.env.MEDIA_MAX_HEIGHT,
+      1080,
+      1
+    ),
     mediaCacheDir: path.resolve(
       overrides.mediaCacheDir ?? process.env.MEDIA_CACHE_DIR ?? './data/cache'
     ),
-    mediaCacheMaxBytes:
-      overrides.mediaCacheMaxBytes ??
-      Number(process.env.MEDIA_CACHE_MAX_BYTES ?? 10 * 1024 * 1024 * 1024),
-    mediaCacheTtlMs:
-      overrides.mediaCacheTtlMs ??
-      Number(process.env.MEDIA_CACHE_TTL_MS ?? 6 * 60 * 60 * 1000),
-    mediaDownloadTimeoutMs:
-      overrides.mediaDownloadTimeoutMs ??
-      Number(process.env.MEDIA_DOWNLOAD_TIMEOUT_MS ?? 600_000),
-    trustProxy: overrides.trustProxy ?? Number(process.env.TRUST_PROXY ?? 1),
-    playlists: overrides.playlists ?? serverConfig.playlists,
+    mediaCacheMaxBytes: readInteger(
+      'MEDIA_CACHE_MAX_BYTES',
+      overrides.mediaCacheMaxBytes ?? process.env.MEDIA_CACHE_MAX_BYTES,
+      10 * 1024 * 1024 * 1024,
+      0
+    ),
+    mediaCacheTtlMs: readInteger(
+      'MEDIA_CACHE_TTL_MS',
+      overrides.mediaCacheTtlMs ?? process.env.MEDIA_CACHE_TTL_MS,
+      6 * 60 * 60 * 1000,
+      0
+    ),
+    mediaDownloadTimeoutMs: readInteger(
+      'MEDIA_DOWNLOAD_TIMEOUT_MS',
+      overrides.mediaDownloadTimeoutMs ?? process.env.MEDIA_DOWNLOAD_TIMEOUT_MS,
+      600_000,
+      1,
+      2_147_483_647
+    ),
+    trustProxy: readInteger(
+      'TRUST_PROXY',
+      overrides.trustProxy ?? process.env.TRUST_PROXY,
+      1,
+      0
+    ),
+    playlists,
   }
 }
 

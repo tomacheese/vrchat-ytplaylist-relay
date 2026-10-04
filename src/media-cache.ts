@@ -9,6 +9,9 @@ import { downloadVideo, YtdlpError } from './ytdlp'
 /** Cache の同時ダウンロードを videoId 単位で直列化する ("proxy" モードで同じ動画への同時要求が二重ダウンロードするのを防ぐ)。 */
 const downloadMutex = new KeyedMutex()
 
+/** 同じ cache directory への一時ダウンロードを 1 件に制限する。 */
+const cacheFillMutex = new KeyedMutex()
+
 /** videoId ごとにディスクへ永続化するキャッシュエントリのメタデータ。 */
 interface CacheEntryMeta {
   videoId: string
@@ -99,8 +102,18 @@ export function selectEvictions(
   return evictVideoIds
 }
 
-function runEviction(cacheDir: string, maxBytes: number): void {
-  const evictVideoIds = selectEvictions(listAllMeta(cacheDir), maxBytes)
+function runEviction(
+  cacheDir: string,
+  maxBytes: number,
+  protectedVideoId: string
+): void {
+  const entries = listAllMeta(cacheDir)
+  const protectedBytes =
+    entries.find((entry) => entry.videoId === protectedVideoId)?.sizeBytes ?? 0
+  const evictVideoIds = selectEvictions(
+    entries.filter((entry) => entry.videoId !== protectedVideoId),
+    maxBytes - protectedBytes
+  )
   for (const videoId of evictVideoIds) {
     try {
       fs.rmSync(cacheFilePath(cacheDir, videoId), { force: true })
@@ -189,57 +202,64 @@ async function downloadAndCache(
   const filePath = cacheFilePath(config.mediaCacheDir, videoId)
 
   return downloadMutex.run(videoId, async () =>
-    logger.withContext(
-      {
-        operation: 'media.cache.download',
-        operation_id: logger.newOperationId(),
-      },
-      async () => {
-        const startedAt = performance.now()
-        let phase = 'prepare'
-        try {
-          // Mutex 取得待ちの間に別の呼び出しが先にダウンロードを終えている可能性があるため再チェックする。
-          const recheckFresh = peekFreshCache(config, videoId)
-          if (recheckFresh) return recheckFresh
+    cacheFillMutex.run(config.mediaCacheDir, async () =>
+      logger.withContext(
+        {
+          operation: 'media.cache.download',
+          operation_id: logger.newOperationId(),
+        },
+        async () => {
+          const startedAt = performance.now()
+          let phase = 'prepare'
+          try {
+            // Mutex 取得待ちの間に別の呼び出しが先にダウンロードを終えている可能性があるため再チェックする。
+            const recheckFresh = peekFreshCache(config, videoId)
+            if (recheckFresh) return recheckFresh
 
-          fs.mkdirSync(config.mediaCacheDir, { recursive: true })
-          phase = 'download'
-          await downloadVideo(videoId, filePath, {
-            ytdlpPath: config.ytdlpPath,
-            timeoutMs: config.mediaDownloadTimeoutMs,
-            maxHeight: config.mediaMaxHeight,
-          })
+            fs.mkdirSync(config.mediaCacheDir, { recursive: true })
+            phase = 'download'
+            await downloadVideo(videoId, filePath, {
+              ytdlpPath: config.ytdlpPath,
+              timeoutMs: config.mediaDownloadTimeoutMs,
+              maxHeight: config.mediaMaxHeight,
+              maxBytes: config.mediaCacheMaxBytes,
+            })
 
-          phase = 'verify'
-          const stat = fs.statSync(filePath)
-          const downloadedAt = Date.now()
-          const newMeta: CacheEntryMeta = {
-            videoId,
-            sizeBytes: stat.size,
-            downloadedAt,
-            lastAccessedAt: downloadedAt,
+            phase = 'verify'
+            const stat = fs.statSync(filePath)
+            const downloadedAt = Date.now()
+            const newMeta: CacheEntryMeta = {
+              videoId,
+              sizeBytes: stat.size,
+              downloadedAt,
+              lastAccessedAt: downloadedAt,
+            }
+            phase = 'metadata'
+            persistMeta(config.mediaCacheDir, newMeta)
+            logger.info('media.cache.downloaded', 'Video cached', {
+              video_id: videoId,
+              size_bytes: stat.size,
+              duration_ms: Math.round(performance.now() - startedAt),
+            })
+
+            phase = 'eviction'
+            runEviction(
+              config.mediaCacheDir,
+              config.mediaCacheMaxBytes,
+              videoId
+            )
+            return filePath
+          } catch (err) {
+            logger.error('media.cache.download_failed', 'Cache fill failed', {
+              video_id: videoId,
+              phase,
+              duration_ms: Math.round(performance.now() - startedAt),
+              error: err,
+            })
+            throw err
           }
-          phase = 'metadata'
-          persistMeta(config.mediaCacheDir, newMeta)
-          logger.info('media.cache.downloaded', 'Video cached', {
-            video_id: videoId,
-            size_bytes: stat.size,
-            duration_ms: Math.round(performance.now() - startedAt),
-          })
-
-          phase = 'eviction'
-          runEviction(config.mediaCacheDir, config.mediaCacheMaxBytes)
-          return filePath
-        } catch (err) {
-          logger.error('media.cache.download_failed', 'Cache fill failed', {
-            video_id: videoId,
-            phase,
-            duration_ms: Math.round(performance.now() - startedAt),
-            error: err,
-          })
-          throw err
         }
-      }
+      )
     )
   )
 }
