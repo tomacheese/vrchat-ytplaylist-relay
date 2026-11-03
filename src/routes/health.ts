@@ -13,7 +13,7 @@ export function healthRouter(config: AppConfig): Router {
 
     for (const entry of config.playlists) {
       const state = loadSlotState(config.dataDir, entry.playlistId)
-      // trackCount は Disk に永続化していないため、メモリキャッシュ (無ければ 0) から拾う。
+      // trackCount is not persisted to disk, so read it from the memory cache (0 if absent).
       const trackCount =
         peekCachedManifest(entry.playlistId)?.tracks.length ?? 0
 

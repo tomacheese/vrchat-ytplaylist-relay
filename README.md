@@ -1,20 +1,20 @@
 # VRChat YouTube Playlist Relay
 
-YouTube の Playlist を読み取り、VRChat のワールドが使う JSON manifest と動画 Endpoint を返す Node.js サーバーです。ワールド側の動画プレイヤー実装には依存しません。
+A Node.js server that reads YouTube Playlists and returns the JSON manifests and video endpoints used by VRChat worlds. It does not depend on the video player implementation on the world side.
 
-Playlist の曲順は要求時に YouTube から取得します。動画ごとの `position` は初回割り当て後に変わらないため、Playlist の編集後も既存の再生 URL を保てます。
+The Playlist order is fetched from YouTube on demand. Each video's `position` never changes after its first assignment, so existing playback URLs keep working after the Playlist is edited.
 
-## 動作要件
+## Requirements
 
-- Node.js 24 以降
+- Node.js 24 or later
 - pnpm 11.23.0
-- `yt-dlp` を PATH に置くか、`YTDLP_PATH` で実行ファイルを指定
-- ローカル実行で YouTube の情報を取得する場合は `deno` も PATH に置く
-- `proxy`、Live `proxy`、または音声 rendition を多重化する VOD `relay` には `ffmpeg` が必要
+- `yt-dlp` on PATH, or its executable path in `YTDLP_PATH`
+- `deno` on PATH as well when running locally and fetching YouTube data
+- `ffmpeg` for `proxy`, Live `proxy`, or VOD `relay` that muxes a separate audio rendition
 
-Dockerfile には Node.js、Deno、ffmpeg と yt-dlp standalone binary が含まれます。
+The Dockerfile bundles Node.js, Deno, ffmpeg, and the yt-dlp standalone binary.
 
-## ローカルで起動する
+## Running locally
 
 ```bash
 pnpm install
@@ -22,22 +22,22 @@ cp .env.example .env
 pnpm run dev
 ```
 
-`pnpm run dev` は `tsx` でサーバーを起動します。ビルドして実行する場合は次を使います。
+`pnpm run dev` starts the server with `tsx`. To build and run instead, use the following.
 
 ```bash
 pnpm run build
 pnpm start
 ```
 
-既定の待ち受けポートは `8787` です。`.env` は省略できます。設定の全項目と既定値は [.env.example](.env.example) にあります。
+The default listen port is `8787`. `.env` is optional. All settings and their defaults are listed in [.env.example](.env.example).
 
-数値設定は単位を付けない整数で指定してください。不正な値、負数、範囲外の値は起動時にエラーになります。`PORT` は `0`～`65535`、`DEFAULT_MAX_SLOTS` と Playlist ごとの `maxSlots`、`MEDIA_MAX_HEIGHT` は正の整数です。timeout は `1`～`2147483647` ms、それ以外の期間・容量・proxy hop 数は `0` 以上の安全な整数を指定します。
+Specify numeric settings as plain integers without units. Invalid, negative, or out-of-range values cause a startup error. `PORT` must be `0` to `65535`; `DEFAULT_MAX_SLOTS`, each Playlist's `maxSlots`, and `MEDIA_MAX_HEIGHT` must be positive integers. Timeouts must be `1` to `2147483647` ms; other durations, sizes, and the proxy hop count must be safe integers of `0` or more.
 
-## Playlist を制限する
+## Restricting Playlists
 
-`config/playlists.json` が存在しない場合、Playlist allowlist は無効です。YouTube の Playlist ID を指定すれば利用できます。
+If `config/playlists.json` does not exist, the Playlist allowlist is disabled and any YouTube Playlist ID can be used.
 
-利用できる Playlist を限定するには、サンプルをコピーして `playlists` 配列を編集します。
+To restrict the available Playlists, copy the example and edit the `playlists` array.
 
 ```bash
 cp config/playlists.json.example config/playlists.json
@@ -55,25 +55,25 @@ cp config/playlists.json.example config/playlists.json
 }
 ```
 
-`displayName` は管理者向けの任意項目で、API の manifest には入りません。`maxSlots` を省略すると `DEFAULT_MAX_SLOTS` を使います。allowlist 有効時に登録していない Playlist を要求すると `404` を返します。
+`displayName` is an optional field for administrators and does not appear in the API manifest. If `maxSlots` is omitted, `DEFAULT_MAX_SLOTS` is used. With the allowlist enabled, requesting an unregistered Playlist returns `404`.
 
-## Endpoint
+## Endpoints
 
-| Method | Path                                | 動作                                                                    |
-| ------ | ----------------------------------- | ----------------------------------------------------------------------- |
-| `GET`  | `/`                                 | サービス名、配信方式、Playlist ID、主要 Endpoint を返す                 |
-| `GET`  | `/health`                           | Playlist ごとの最終 refresh 状態を返す。状態が degraded でも HTTP `200` |
-| `GET`  | `/:playlistId/manifest.json`        | Playlist manifest を返す                                                |
-| `GET`  | `/:playlistId/:position.mp4`        | manifest の position に対応する動画を設定済みの方式で配信する           |
-| `GET`  | `/video/:videoId`                   | Playlist を経由せず YouTube video ID を指定する。末尾の `.mp4` は任意   |
-| `GET`  | `/live/:videoId/:file`              | video ID で指定した Live / VOD relay の playlist / segment を返す       |
-| `GET`  | `/:playlistId/:position/live/:file` | Playlist position 経由の Live / VOD relay playlist / segment を返す     |
-| `POST` | `/admin/refresh`                    | 既知の全 Playlist を再取得する                                          |
-| `POST` | `/admin/refresh/:playlistId`        | 指定 Playlist を再取得する                                              |
+| Method | Path                                | Behavior                                                                                                |
+| ------ | ----------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `GET`  | `/`                                 | Returns the service name, delivery modes, Playlist IDs, and main endpoints                              |
+| `GET`  | `/health`                           | Returns the last refresh state of each configured Playlist. HTTP `200` even when the status is degraded |
+| `GET`  | `/:playlistId/manifest.json`        | Returns the Playlist manifest                                                                           |
+| `GET`  | `/:playlistId/:position.mp4`        | Serves the video for the manifest position using the configured delivery mode                           |
+| `GET`  | `/video/:videoId`                   | Takes a YouTube video ID directly, without a Playlist. The trailing `.mp4` is optional                  |
+| `GET`  | `/live/:videoId/:file`              | Returns a Live / VOD relay playlist / segment for the given video ID                                    |
+| `GET`  | `/:playlistId/:position/live/:file` | Returns a Live / VOD relay playlist / segment via a Playlist position                                   |
+| `POST` | `/admin/refresh`                    | Refreshes all known Playlists                                                                           |
+| `POST` | `/admin/refresh/:playlistId`        | Refreshes the specified Playlist                                                                        |
 
-`/video/:videoId` と `/live/:videoId/:file` は Playlist allowlist を通りません。allowlist は Playlist 経由の manifest・position route を制限しますが、video ID を直接指定する route は制限しません。
+`/video/:videoId` and `/live/:videoId/:file` do not go through the Playlist allowlist. The allowlist restricts the manifest and position routes that go through a Playlist, but not the routes that take a video ID directly.
 
-Manifest の形式は次のとおりです。`tracks` は YouTube 上の現在の並び順ですが、各 `position` は動画 ID に割り当てた不変の番号です。`generation` は Playlist の順序・動画 ID・タイトルが変わった場合に増えます。
+The manifest format is as follows. `tracks` is the current order on YouTube, but each `position` is an immutable number assigned to a video ID. `generation` increases when the Playlist's order, video IDs, or titles change.
 
 ```json
 {
@@ -84,46 +84,46 @@ Manifest の形式は次のとおりです。`tracks` は YouTube 上の現在�
 }
 ```
 
-Playlist の情報は要求時に yt-dlp で取得し、`MANIFEST_CACHE_TTL_MS` の間だけメモリに保持します。Playlist の曲順・タイトルはディスクに保存しません。`data/` には Playlist ごとの position 対応表、generation、refresh 状態など (`slots.json`) と、選択した配信方式に応じた動画データを保存します。
+Playlist data is fetched with yt-dlp on request and held in memory only for `MANIFEST_CACHE_TTL_MS`. The Playlist order and titles are not stored on disk. `data/` stores each Playlist's position mapping, generation, refresh state, and so on (`slots.json`), plus video data for the selected delivery mode.
 
-初回取得に失敗して manifest がまだ無い場合は `503` を返します。最後に取得した manifest がある場合、refresh 失敗中もそれを返します。position が未割り当てなら動画 Endpoint は manifest を更新して解決を試みます。
+If the first fetch fails and no manifest exists yet, `503` is returned. If a previously fetched manifest exists, it is still returned while refresh is failing. If a position has not been assigned yet, the video endpoint refreshes the manifest and tries to resolve it.
 
-取得に失敗した Playlist は、`MANIFEST_RETRY_DELAY_MS` (既定 `30000` ms) の間、公開 manifest 要求から再取得しません。その間は直前の manifest を返し、キャッシュが無ければ `503` を返します。管理 Endpoint と CLI の明示的な refresh は待機期間中でも実行します。失敗情報をディスクへ保存できない場合も、メモリ上の manifest を継続して返します。
+After a Playlist fetch fails, public manifest requests do not refetch it for `MANIFEST_RETRY_DELAY_MS` (default `30000` ms). During that time the previous manifest is returned, or `503` if nothing is cached. Explicit refreshes through the admin endpoints and the CLI run even during the wait. If the failure information cannot be saved to disk, the in-memory manifest continues to be served.
 
-管理 Endpoint は `ADMIN_TOKEN` が設定されている場合だけ使えます。リクエストには `Authorization: Bearer <token>` が必要です。Token が未設定の場合、`/admin` は `403` を返します。通常の manifest 要求はキャッシュ TTL に従って自動更新されるため、TTL を待たずに更新する場合に管理 Endpoint を使います。
+The admin endpoints are available only when `ADMIN_TOKEN` is set, and requests need `Authorization: Bearer <token>`. If the token is unset, `/admin` returns `403`. Normal manifest requests refresh automatically according to the cache TTL, so use the admin endpoints only to refresh without waiting for the TTL.
 
-## CLI で Playlist を再取得する
+## Refreshing Playlists from the CLI
 
-サーバーと同じ環境設定を使って `pnpm refresh` を実行します。引数を省略すると、設定済みの Playlist を順番に再取得します。allowlist が無効なら、`DATA_DIR` 直下のディレクトリ名を Playlist ID の候補にします。position state 以外のディレクトリも候補です。そのため、`cache` や `live` を `DATA_DIR` 内に作る設定では allowlist を使ってください。または、それらの保存先を `DATA_DIR` の外へ移してください。ID を指定すると、その Playlist だけを再取得します。
+Run `pnpm refresh` with the same environment settings as the server. Without arguments it refreshes the configured Playlists in order. If the allowlist is disabled, the directory names directly under `DATA_DIR` are treated as Playlist ID candidates, including directories that do not hold position state. So if you place `cache` or `live` inside `DATA_DIR`, use an allowlist, or move those locations outside `DATA_DIR`. With an ID argument, only that Playlist is refreshed.
 
-CLI はサーバーとは別プロセスです。position 状態はディスクに反映されます。一方、起動中サーバーの manifest メモリキャッシュは無効になりません。変更が公開 manifest に反映されるのは TTL 切れ後です。すぐに反映するには、認証済みの管理 Endpoint を使ってください。
+The CLI is a separate process from the server. Position state is written to disk, but the running server's in-memory manifest cache is not invalidated, so the change appears in the public manifest only after the TTL expires. To reflect it immediately, use the authenticated admin endpoint.
 
 ```bash
 pnpm refresh
 pnpm refresh PLxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ```
 
-## 動画の配信方式
+## Video delivery modes
 
-VOD と Live は別々に設定します。`MEDIA_DELIVERY_MODE` は VOD、`LIVE_DELIVERY_MODE` は配信中の動画に適用されます。どちらも未設定時は `redirect` です。
+VOD and Live are configured separately. `MEDIA_DELIVERY_MODE` applies to VOD and `LIVE_DELIVERY_MODE` to live streams. Both default to `redirect`.
 
-| 値               | 動作                                                                                                                                   | 必要なもの                                         |
-| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
-| `redirect`       | YouTube の watch URL に HTTP `302` を返す                                                                                              | なし                                               |
-| `relay`          | サーバー側 yt-dlp が解決した HLS を返す URL に `302`。VOD で音声が別 rendition の場合は、要求された segment を ffmpeg で多重化して配信 | yt-dlp。VOD の多重化時は ffmpeg と一時ディスク領域 |
-| `relay-redirect` | relay の解決または準備に失敗した場合、YouTube watch URL に `302`                                                                       | `relay` と同じ                                     |
-| `proxy`          | VOD は動画をダウンロードしてディスクキャッシュから配信。Live は ffmpeg で HLS をローカルに再公開                                       | yt-dlp、ffmpeg、ディスク領域                       |
-| `hybrid`         | VOD 専用。キャッシュ済みなら動画を直接配信し、未キャッシュならダウンロードを始めて relay 相当の応答を返す                              | yt-dlp、ffmpeg、ディスク領域                       |
+| Value            | Behavior                                                                                                                                                           | Requirements                                            |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------- |
+| `redirect`       | Returns an HTTP `302` to the YouTube watch URL                                                                                                                     | None                                                    |
+| `relay`          | `302` to a URL that serves the HLS resolved by server-side yt-dlp. For VOD with a separate audio rendition, the requested segment is muxed with ffmpeg on delivery | yt-dlp. For VOD muxing, ffmpeg and temporary disk space |
+| `relay-redirect` | `302` to the YouTube watch URL if relay resolution or preparation fails                                                                                            | Same as `relay`                                         |
+| `proxy`          | VOD is downloaded and served from the disk cache. Live HLS is republished locally with ffmpeg                                                                      | yt-dlp, ffmpeg, disk space                              |
+| `hybrid`         | VOD only. Serves cached video directly; if not cached, starts the download and returns a relay-equivalent response                                                 | yt-dlp, ffmpeg, disk space                              |
 
-`hybrid` は Live には設定できません。どちらか一方を `relay-redirect` にする場合、もう一方は `redirect` または `relay-redirect` にしてください。Resolver の失敗は VOD / Live 判定前に起きるため、この組み合わせに制限しています。
+`hybrid` cannot be set for Live. If either mode is `relay-redirect`, set the other to `redirect` or `relay-redirect`. This combination is restricted because a resolver failure happens before the VOD / Live determination.
 
-`proxy` と `hybrid` は完成済みの VOD キャッシュを動画情報の再解決前に配信します。TTL 切れでも古いファイルを返し、バックグラウンドで更新します。更新失敗時は古いファイルを保持します。動画 1 本が `MEDIA_CACHE_MAX_BYTES` を超える場合はダウンロードを失敗として扱い、既存ファイルを置き換えません。ダウンロード中は yt-dlp のサイズ指定と一時ファイルの監視で上限超過を止めます。監視間隔中に一時ファイルが上限を超える場合があります。
+`proxy` and `hybrid` serve a completed VOD cache before re-resolving the video information. Even after the TTL expires the stale file is served while it is refreshed in the background, and a failed refresh keeps the stale file. If a single video exceeds `MEDIA_CACHE_MAX_BYTES`, the download is treated as failed and the existing file is not replaced. During a download, the size limit passed to yt-dlp and monitoring of the temporary file stop an overrun. The temporary file may exceed the limit between monitoring intervals.
 
-`proxy` と `hybrid` は動画データをサーバーへダウンロードして再配信します。運用する前に、対象コンテンツの権利、適用される利用条件、必要なディスク容量とネットワーク帯域を確認してください。
+`proxy` and `hybrid` download video data to the server and serve it again. Before operating them, check the rights to the content, the applicable terms of use, and the disk capacity and network bandwidth required.
 
-## リバースプロキシ
+## Reverse proxy
 
-Nginx などのリバースプロキシを使う場合は、`TRUST_PROXY` をサーバーまでの実際の proxy hop 数に設定してください。既定値は `1` です。Express はこの値を使って `X-Forwarded-For` から接続元を解決します。無条件に信頼する値は使わないでください。
+When using a reverse proxy such as Nginx, set `TRUST_PROXY` to the actual number of proxy hops up to the server. The default is `1`. Express uses this value to resolve the client address from `X-Forwarded-For`. Do not use a value that trusts unconditionally.
 
 ## Docker
 
@@ -139,17 +139,17 @@ docker run -d \
   vrchat-ytplaylist-relay
 ```
 
-`/app/data` は position 状態と VOD キャッシュの保存先です。Live / relay の一時ファイルもここに作成します。このディレクトリを volume に置いてください。allowlist を使う場合は、`config/playlists.json` を `/app/config/playlists.json` に read-only で mount します。
+`/app/data` stores position state and the VOD cache. Live / relay temporary files are also created there. Put this directory on a volume. To use the allowlist, mount `config/playlists.json` read-only at `/app/config/playlists.json`.
 
-Container entrypoint は既定で起動時に yt-dlp を更新し、その後 `YTDLP_UPDATE_INTERVAL_HOURS` ごとに更新を確認します。`YTDLP_AUTO_UPDATE=0` で自動更新を無効にできます。
+By default the container entrypoint updates yt-dlp at startup and then checks for updates every `YTDLP_UPDATE_INTERVAL_HOURS` hours (default 24). Set `YTDLP_AUTO_UPDATE=0` to disable automatic updates. These two variables are read only by `docker/entrypoint.sh`; they are container-entrypoint settings, not part of `AppConfig` or `.env.example`.
 
-Docker image は `linux/amd64` と `linux/arm64` に対応し、それぞれの CPU 向け yt-dlp を含みます。同一プロセス内では cache directory ごとに同時ダウンロードを 1 件に制限します。yt-dlp の timeout 時は子プロセスも終了させ、終了確認後に一時ダウンロードファイルを削除します。
+The Docker image supports `linux/amd64` and `linux/arm64` and includes the yt-dlp build for each CPU. Within one process, concurrent downloads are limited to one per cache directory. On a yt-dlp timeout the child processes are also terminated, and the temporary download file is deleted after termination is confirmed.
 
-## ログ
+## Logs
 
-ログは stdout / stderr に 1 行 1 JSON object で出力します。各行に `timestamp`、`level`、`event`、`message` が入ります。必要に応じて `request_id`、`operation_id`、処理時間、Playlist / video ID なども記録します。HTTP response の `X-Request-Id` はログの `request_id` と一致します。
+Logs go to stdout / stderr as one JSON object per line. Each line has `timestamp`, `level`, `event`, and `message`, plus `request_id`, `operation_id`, duration, and Playlist / video IDs where relevant. The `X-Request-Id` HTTP response header matches the log `request_id`.
 
-`/health` と Live / VOD segment 要求は、通常成功時のログを省略します。失敗は記録します。Authorization、Cookie、client IP、request body / query、動画タイトル、完全な media URL は記録しません。ログ sanitizer は既知の認証情報を伏せます。ただし、未知の secret を検出できる保証はありません。機密値をログ field に渡さないでください。
+`/health` and Live / VOD segment requests omit logs on normal success; failures are logged. Authorization, Cookie, client IP, request body / query, video titles, and full media URLs are not logged. The log sanitizer redacts known credentials, but there is no guarantee that unknown secrets are detected. Do not pass sensitive values to log fields.
 
 ```bash
 docker logs -f vrchat-ytplaylist-relay
@@ -157,15 +157,15 @@ docker logs vrchat-ytplaylist-relay 2>&1 | grep '"event":"playlist.refresh.faile
 docker logs vrchat-ytplaylist-relay 2>&1 | grep '"request_id":"<X-Request-Id>"'
 ```
 
-ログ field と event の概要は [docs/logging.md](docs/logging.md) を参照してください。
+See [docs/logging.md](docs/logging.md) for an overview of log fields and events.
 
-## 開発と検証
+## Development and verification
 
 ```bash
-pnpm test                 # ローカルで完結するテスト
+pnpm test                 # self-contained tests
 pnpm run typecheck
 pnpm run lint
-pnpm run test:integration # 実 yt-dlp / ffmpeg / ネットワークを使うテストを含む
+pnpm run test:integration # includes tests that use real yt-dlp / ffmpeg / network
 ```
 
-統合テストは `RUN_INTEGRATION=1` で有効になります。通常の `pnpm test` は外部サービスを使うケースを skip します。CI は軽量なテストを実行します。
+Integration tests are enabled by `RUN_INTEGRATION=1`. The regular `pnpm test` skips the cases that use external services. CI runs the lightweight tests.

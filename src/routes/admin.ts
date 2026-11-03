@@ -4,34 +4,33 @@ import type { AppConfig } from '../config'
 import { refreshAll, refreshPlaylist } from '../refresh'
 
 /**
- * `Authorization` ヘッダーと期待値を一定時間で比較する。
- * `!==` による文字列比較は不一致が判明した時点で処理を打ち切るため、比較にかかる時間から
- * 先頭何文字まで一致していたかを推測される (timing attack) リスクがある。
+ * Compares the `Authorization` header with the expected value in constant time.
+ * A `!==` string comparison stops at the first mismatch, so the comparison time could reveal
+ * how many leading characters matched (timing attack).
  */
 function timingSafeEqualString(actual: string, expected: string): boolean {
   const actualBuf = Buffer.from(actual)
   const expectedBuf = Buffer.from(expected)
-  // crypto.timingSafeEqual はバッファ長が異なると例外を投げるため、長さの不一致も
-  // ここで先に (それ自体は非対称なタイミングになるが実用上問題ない) false 扱いにする。
+  // crypto.timingSafeEqual throws when buffer lengths differ, so treat a length mismatch as false
+  // up front (this leaks timing asymmetrically, which is acceptable in practice).
   if (actualBuf.length !== expectedBuf.length) return false
   return crypto.timingSafeEqual(actualBuf, expectedBuf)
 }
 
 /**
- * 管理 Endpoint。Authentication (ADMIN_TOKEN) 必須で、Public な Manifest / Media Endpoint とは
- * 認証境界を分離する。VRChat World からはこの Endpoint を呼び出さない
- * (VRCUrl 経由で ADMIN_TOKEN を World 側に置くこと自体が漏洩リスクになるため)。
+ * Admin endpoints. Authentication (ADMIN_TOKEN) is required, keeping a separate auth boundary
+ * from the public Manifest / Media Endpoints. The VRChat World must not call these
+ * (putting ADMIN_TOKEN in the World via a VRCUrl would itself risk leaking it).
  *
- * Manifest は Client からの要求に応じて TTL キャッシュ付きで取得するため (`getManifestForClient`)、
- * 通常運用でこの Endpoint を呼ぶ必要はない。TTL 経過を待たずにキャッシュを強制的に無効化して
- * 最新の Playlist 内容を即座に反映させたい場合にのみ管理者が使う。
+ * Manifests are fetched on client request with a TTL cache (`getManifestForClient`), so normal
+ * operation never needs this endpoint. An admin uses it only to force-invalidate the cache and
+ * reflect the latest Playlist contents immediately without waiting for the TTL.
  */
 export function adminRouter(config: AppConfig): Router {
   const router = Router()
 
-  // "/admin" を明示的に指定する。パス省略の router.use() は Router 内の全リクエストにマッチし、
-  // この Router が app root にマウントされている都合上、後続の manifest/media (公開 Endpoint) まで
-  // 巻き込んで 401 を返してしまう。
+  // Pass "/admin" explicitly. A path-less router.use() matches every request in this Router, and since
+  // it is mounted at the app root it would also catch the later public manifest/media endpoints and return 401.
   router.use('/admin', (req, res, next) => {
     if (!config.adminToken) {
       res.status(403).json({
@@ -49,8 +48,8 @@ export function adminRouter(config: AppConfig): Router {
   })
 
   router.post('/admin/refresh', (_req, res, next) => {
-    // Express 4 のハンドラーは void を期待するため、Router に渡す関数自体は async にせず
-    // Promise Chain の末尾 .catch(next) でエラーを処理する (no-misused-promises 対策)。
+    // Express 4 handlers are expected to return void, so the function passed to the Router is not async;
+    // errors are handled by .catch(next) at the end of the Promise chain (avoids no-misused-promises).
     refreshAll(config)
       .then((results) => {
         const ok = results.every((r) => r.ok)

@@ -16,9 +16,9 @@ afterEach(() => {
 })
 
 /**
- * `yt-dlp -j` の代わりに固定 JSON を stdout に返す偽 yt-dlp スクリプトを作る。
- * 呼び出し回数は `<script>.count` ファイルに記録され、テスト側でキャッシュ挙動を検証できる。
- * `failMessage` を指定すると、常に exit code 1 で失敗する (呼び出し回数は記録される)。
+ * Creates a fake yt-dlp script that prints fixed JSON to stdout instead of `yt-dlp -j`.
+ * The call count is recorded in `<script>.count` so tests can verify caching behavior.
+ * With `failMessage`, it always fails with exit code 1 (the call count is still recorded).
  */
 function makeFakeYtdlp(
   dir: string,
@@ -27,7 +27,7 @@ function makeFakeYtdlp(
   const scriptPath = path.join(dir, `fake-ytdlp-${crypto.randomUUID()}.mjs`)
   const countPath = `${scriptPath}.count`
   fs.writeFileSync(countPath, '0')
-  // 失敗分岐の String.raw は、生成する子スクリプト内の `\n` を保持するために使う。
+  // String.raw in the failure branch keeps the `\n` literal in the generated child script.
   const delay = options.delayMs
     ? `await new Promise((resolve) => setTimeout(resolve, ${options.delayMs}))\n`
     : ''

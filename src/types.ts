@@ -1,10 +1,10 @@
-/** 設定ファイル (config/playlists.json) に記述する Playlist 定義 */
+/** Playlist definition written in the config file (config/playlists.json) */
 export interface PlaylistConfigEntry {
-  /** YouTube Playlist の `list` query parameter値。Manifest / Media Endpoint の URL segment としても使う。 */
+  /** Value of the YouTube playlist's `list` query parameter. Also used as the URL segment of the manifest / media endpoints. */
   playlistId: string
-  /** 管理用の表示名。Manifest には含めない (VRChat World 側は playlistId でしか Playlist を識別しないため不要)。 */
+  /** Display name for administration. Not included in the manifest (the VRChat world identifies playlists only by playlistId). */
   displayName?: string
-  /** この Playlist 専用の Position Pool 上限。省略時は DEFAULT_MAX_SLOTS を使う。 */
+  /** Position Pool limit for this playlist. Falls back to `defaultMaxSlots` in the config if omitted. */
   maxSlots?: number
 }
 
@@ -12,7 +12,7 @@ export interface ServerConfig {
   playlists: PlaylistConfigEntry[]
 }
 
-/** yt-dlp --flat-playlist -J が返す entry の必要フィールドのみ */
+/** Only the needed fields of an entry returned by `yt-dlp --flat-playlist -J` */
 export interface YtdlpFlatEntry {
   id: string
   title: string | null
@@ -20,28 +20,28 @@ export interface YtdlpFlatEntry {
 }
 
 /**
- * Backend が Disk に永続化する Playlist ごとの Position Pool 状態。
+ * Per-playlist Position Pool state the backend persists to disk.
  *
- * Track の並び・Title など Playlist の実際の内容は含まない。それらは Client からの要求時に
- * 都度 yt-dlp で取得し、メモリ上の TTL キャッシュにのみ載せる ({@link module:refresh} 参照)。
- * ここに永続化するのは、Redirect Pool の URL 意味が変化しないよう immutable に保つ必要がある
- * videoId <-> slot の対応表と、Client 側の変更検知に使う generation のみ。
+ * It does not include the playlist's actual contents such as track order and titles. Those are fetched
+ * with yt-dlp on each client request and kept only in an in-memory TTL cache (see {@link module:refresh}).
+ * Only what must stay immutable so the meaning of Redirect Pool URLs never changes is persisted here:
+ * the videoId <-> slot mapping, and the generation clients use to detect changes.
  */
 export interface SlotAllocationState {
   playlistId: string
-  /** Manifest 内容 (順序 + Title) が変化するたびに増分する。 */
+  /** Incremented whenever the manifest contents (order + title) change. */
   generation: number
-  /** 次に割り当てる未使用 slot 番号 */
+  /** Next unused slot number */
   nextSlot: number
   maxSlots: number
-  /** videoId -> slot (immutable / 使い回し禁止) */
+  /** videoId -> slot (immutable; slots must not be reused) */
   videoIdToSlot: Record<string, number>
-  /** slot -> videoId (Media Redirect Endpoint 用) */
+  /** slot -> videoId (for the Media Redirect Endpoint) */
   slotToVideoId: Record<string, string>
   /**
-   * 直近成功時点の Track 内容 (順序 + videoId + Title) から計算した hash。
-   * これを Track 内容そのものの代わりに永続化することで、Playlist の実データを Disk に
-   * 残さずに generation 更新要否 (内容が変わったかどうか) だけを判定できる。
+   * Hash of the track contents (order + videoId + title) at the last success.
+   * Persisting this instead of the contents lets us decide whether to bump generation
+   * (whether the contents changed) without keeping the playlist's actual data on disk.
    */
   contentHash: string | null
   lastRefreshAt: number | null
@@ -49,7 +49,7 @@ export interface SlotAllocationState {
   lastError: string | null
 }
 
-/** 公開 Manifest (`/{playlistId}/manifest.json` のレスポンス形式) */
+/** Public manifest (response shape of `/{playlistId}/manifest.json`) */
 export interface ManifestTrack {
   position: number
   title: string

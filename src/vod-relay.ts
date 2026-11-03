@@ -5,20 +5,20 @@ import type { AppConfig } from './config'
 import { attr, fetchAvc1Master, toHttpsUrl } from './hls-filter'
 import { logger } from './logger'
 
-/** VOD の再公開 playlist のファイル名 (Live と同じ配信ルートで配る)。 */
+/** VOD relay playlist file name (served by the same route as live). */
 const PLAYLIST_FILE_NAME = 'live.m3u8'
 
-/** segment 1 個の取得・多重化に許す時間。 */
+/** Time allowed to fetch and mux one segment. */
 const SEGMENT_TIMEOUT_MS = 30_000
 
-/** HLS メディア playlist の、多重化に必要な部分。 */
+/** The parts of an HLS media playlist needed for muxing. */
 interface ParsedPlaylist {
-  /** `#EXT-X-MAP` の初期化セグメント URL (fMP4 の場合)。TS なら null。 */
+  /** `#EXT-X-MAP` init segment URL (fMP4); null for TS. */
   init: string | null
   segments: { url: string; duration: number }[]
 }
 
-/** videoId 単位の VOD 再公開状態。segment は要求されたときに 1 個ずつ多重化する。 */
+/** Per-videoId VOD relay state. Segments are muxed one at a time on request. */
 interface VodRelayState {
   operationId: string
   outDir: string
@@ -26,25 +26,25 @@ interface VodRelayState {
   audio: ParsedPlaylist
   videoInit: Buffer | null
   audioInit: Buffer | null
-  /** 映像側の各 segment の開始時刻 (秒。映像 playlist 上の EXTINF の累計)。 */
+  /** Start time (s) of each video segment: cumulative EXTINF of the video playlist. */
   videoStarts: number[]
-  /** 音声側の各 segment の開始時刻 (秒。音声 playlist 上の EXTINF の累計)。映像とは独立して計算する。 */
+  /** Start time (s) of each audio segment: cumulative EXTINF of the audio playlist, computed independently of video. */
   audioStarts: number[]
   done: Set<number>
   inflight: Map<number, Promise<string>>
-  /** 多重化済み segment の合計サイズ (bytes)。 */
+  /** Total size of muxed segments (bytes). */
   bytes: number
   lastAccessedAt: number
 }
 
 const vods = new Map<string, VodRelayState>()
 
-/** 破棄中 (作成中の segment の完了待ち・ディレクトリ削除中) の videoId。再作成は完了まで待たせる。 */
+/** videoIds being torn down (awaiting in-flight segments / removing the directory). Re-creation waits for completion. */
 const stopping = new Map<string, Promise<void>>()
 
 /**
- * HLS メディア playlist から segment の URL と長さを取り出す。URI は `baseUrl` を基準に https へ解決する。
- * byte range は YouTube では使われないため未対応として例外にする。
+ * Extracts segment URLs and durations from an HLS media playlist, resolving URIs to https against `baseUrl`.
+ * Byte ranges are unsupported (YouTube doesn't use them) and throw.
  */
 export function parseMediaPlaylist(
   text: string,
@@ -80,8 +80,8 @@ export function parseMediaPlaylist(
 }
 
 /**
- * 映像 segment の長さから、`#EXT-X-ENDLIST` 付きの完全な VOD playlist を組み立てる。
- * segment は個別に多重化され continuity counter が連続しないため、先頭以外に discontinuity を宣言する。
+ * Builds a complete VOD playlist (with `#EXT-X-ENDLIST`) from the video segment durations.
+ * Segments are muxed individually so continuity counters aren't contiguous; discontinuity is declared on all but the first.
  */
 export function buildVodPlaylist(segments: { duration: number }[]): string {
   const target = Math.ceil(Math.max(...segments.map((s) => s.duration)))
@@ -101,7 +101,7 @@ export function buildVodPlaylist(segments: { duration: number }[]): string {
   ].join('\n')
 }
 
-/** `fetchAvc1Master` の結果 (variant 1 本 + 音声 rendition) から映像・音声のメディア playlist URL を選ぶ。 */
+/** Picks the video and audio media playlist URLs from the `fetchAvc1Master` result (one variant + audio rendition). */
 function pickPlaylistUrls(master: string): { video: string; audio: string } {
   const lines = master.split('\n')
   const i = lines.findIndex((l) => l.startsWith('#EXT-X-STREAM-INF:'))
@@ -118,7 +118,7 @@ function pickPlaylistUrls(master: string): { video: string; audio: string } {
   return { video, audio: audioUrl }
 }
 
-/** 各 segment の開始時刻 (秒) を、EXTINF の累計として 1 回の走査で求める。 */
+/** Segment start times (s) as the running sum of EXTINF. */
 function segmentStarts(segments: { duration: number }[]): number[] {
   let start = 0
   return segments.map((s) => {
@@ -128,14 +128,14 @@ function segmentStarts(segments: { duration: number }[]): number[] {
   })
 }
 
-/** URL を取得して本文を返す。 */
+/** Fetches a URL and returns the body. */
 async function fetchBuffer(url: string, timeoutMs: number): Promise<Buffer> {
   const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) })
   if (!res.ok) throw new Error(`HTTP ${String(res.status)} fetching ${url}`)
   return Buffer.from(await res.arrayBuffer())
 }
 
-/** ffmpeg を実行し、正常終了で resolve、異常終了・タイムアウトで reject する。 */
+/** Runs ffmpeg; resolves on success, rejects on failure or timeout. */
 function runFfmpeg(args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
     const child = spawn('ffmpeg', ['-loglevel', 'error', '-y', ...args], {
@@ -165,11 +165,11 @@ function runFfmpeg(args: string[]): Promise<void> {
 }
 
 /**
- * 映像・音声の segment k を取得し、`-c copy` で MPEG-TS 1 個に多重化する。
- * YouTube の音声 segment は時刻が 0 から始まるため、元の時刻は使わず playlist 上の開始時刻を与える。
- * 映像と音声で EXTINF の丸めが segment ごとに一致しないことがあるため、`-itsoffset` を入力ごとに
- * 指定し、各ストリーム自身の累計 (`videoStarts`/`audioStarts`) で独立に offset する。
- * fMP4 は初期化セグメントを先頭に付ける。
+ * Fetches video and audio segment k and muxes them into one MPEG-TS with `-c copy`.
+ * YouTube audio segments start at time 0, so the playlist start time is supplied instead.
+ * EXTINF rounding can differ between video and audio per segment, so `-itsoffset` is set per
+ * input from each stream's own cumulative start (`videoStarts`/`audioStarts`).
+ * For fMP4, the init segment is prepended.
  */
 async function produceSegment(
   state: VodRelayState,
@@ -228,7 +228,7 @@ async function produceSegment(
   }
 }
 
-/** segment k の多重化済みファイルのパスを返す。未作成なら作成し、同時要求は 1 回の作成に合流させる。 */
+/** Returns the path of muxed segment k, creating it if needed; concurrent requests share one creation. */
 function getSegment(state: VodRelayState, k: number): Promise<string> {
   const file = path.join(state.outDir, `seg${String(k)}.ts`)
   if (state.done.has(k)) return Promise.resolve(file)
@@ -247,7 +247,7 @@ function getSegment(state: VodRelayState, k: number): Promise<string> {
   return pending
 }
 
-/** videoId の VOD 再公開を破棄し、多重化済みファイルを削除する。 */
+/** Tears down a videoId's VOD relay and deletes the muxed files. */
 export function stopVodRelay(videoId: string): Promise<void> {
   const state = vods.get(videoId)
   if (!state) return stopping.get(videoId) ?? Promise.resolve()
@@ -269,8 +269,8 @@ export function stopVodRelay(videoId: string): Promise<void> {
 }
 
 /**
- * VOD の segment `index` の多重化済みファイルのパスを返す。再公開が無い、または範囲外なら null。
- * 連続再生の待ち時間を隠すため、次の segment を裏で先に作る。
+ * Returns the path of VOD segment `index`, or null if there is no relay or the index is out of range.
+ * Prefetches the next segment in the background to hide latency during continuous playback.
  */
 export async function ensureVodSegment(
   videoId: string,
@@ -289,7 +289,7 @@ export async function ensureVodSegment(
       operation_id: state.operationId,
       error: err instanceof Error ? err : new Error(String(err)),
     })
-    // 取得元 URL の失効 (403/410 等) は以降の要求でも直らないため、再作成 (URL の再解決) できるよう破棄する。
+    // An expired source URL (403/410 etc.) won't recover on later requests; tear down so it can be re-created (URL re-resolved).
     if (
       /^HTTP 4\d\d /.test((err as Error).message) &&
       vods.get(videoId) === state
@@ -321,7 +321,7 @@ export async function ensureVodSegment(
   return file
 }
 
-/** videoId の VOD 再公開が既にあれば、最終アクセスを更新して配信先を返す。 */
+/** Returns the destination of an existing VOD relay for videoId, updating its last access. */
 export function getVodRelay(
   videoId: string
 ): { outDir: string; playlistFileName: string } | null {
@@ -331,13 +331,13 @@ export function getVodRelay(
   return { outDir: state.outDir, playlistFileName: PLAYLIST_FILE_NAME }
 }
 
-/** videoId の VOD 再公開の最終アクセスを更新する。 */
+/** Updates the last access time of a videoId's VOD relay. */
 export function touchVodRelay(videoId: string): void {
   const state = vods.get(videoId)
   if (state) state.lastAccessedAt = Date.now()
 }
 
-/** `stopVodRelay` の失敗をログに残して握りつぶす。1 件の削除失敗で残りの破棄を止めないため。 */
+/** Logs and swallows `stopVodRelay` failures so one failed removal doesn't stop the remaining teardowns. */
 async function stopVodRelaySafely(videoId: string): Promise<void> {
   try {
     await stopVodRelay(videoId)
@@ -350,8 +350,8 @@ async function stopVodRelaySafely(videoId: string): Promise<void> {
 }
 
 /**
- * idle TTL を超えた VOD 再公開を破棄し、なお合計サイズが `liveRelayMaxBytes` を超えていれば
- * 最終アクセスが古いものから破棄する。
+ * Tears down VOD relays past the idle TTL, then, if the total size still exceeds
+ * `liveRelayMaxBytes`, tears down the least recently accessed ones first.
  */
 export async function evictVodRelays(config: AppConfig): Promise<void> {
   const now = Date.now()
@@ -384,9 +384,10 @@ export async function evictVodRelays(config: AppConfig): Promise<void> {
 }
 
 /**
- * 音声が別 rendition の VOD について、完全な VOD playlist (`#EXT-X-ENDLIST` 付き、長さは元の映像 segment の
- * EXTINF) を作って返す。segment は要求されるまで作らないため、初回の待ち時間は playlist の取得だけで済み、
- * プレイヤーは最初から VOD として扱えて Seek できる。ffmpeg プロセスは常駐させない。
+ * For a VOD whose audio is a separate rendition, builds a complete VOD playlist (with
+ * `#EXT-X-ENDLIST`, durations from the original video segments' EXTINF). Segments are only made
+ * on request, so initial latency is just fetching the playlists, and the player treats it as VOD
+ * from the start and can seek. No ffmpeg process is kept running.
  */
 export async function ensureVodRelay(
   config: AppConfig,

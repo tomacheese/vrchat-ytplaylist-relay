@@ -6,19 +6,19 @@ import { KeyedMutex } from './lock'
 import { logger } from './logger'
 import { downloadVideo, YtdlpError } from './ytdlp'
 
-/** Cache の同時ダウンロードを videoId 単位で直列化する ("proxy" モードで同じ動画への同時要求が二重ダウンロードするのを防ぐ)。 */
+/** Serializes cache downloads per videoId (prevents concurrent requests for the same video from downloading twice in "proxy" mode). */
 const downloadMutex = new KeyedMutex()
 
-/** 同じ cache directory への一時ダウンロードを 1 件に制限する。 */
+/** Limits temporary downloads into the same cache directory to one at a time. */
 const cacheFillMutex = new KeyedMutex()
 
-/** videoId ごとにディスクへ永続化するキャッシュエントリのメタデータ。 */
+/** Metadata of a cache entry persisted to disk per videoId. */
 interface CacheEntryMeta {
   videoId: string
   sizeBytes: number
-  /** 動画ファイルを最後にダウンロード (更新) した時刻。TTL 判定に使う。 */
+  /** When the video file was last downloaded (refreshed). Used for the TTL check. */
   downloadedAt: number
-  /** 最後にキャッシュヒットとして参照された時刻。LRU 削除の判定に使う。 */
+  /** When it was last read as a cache hit. Used for LRU eviction. */
   lastAccessedAt: number
 }
 
@@ -31,8 +31,8 @@ function cacheMetaPath(cacheDir: string, videoId: string): string {
 }
 
 /**
- * tmp ファイルへ書いてから rename する。同一ボリューム上の rename は atomic なので、
- * 読み手が書きかけの内容を見ることはない (manifest-store.ts の writeFileAtomic と同じ方針)。
+ * Writes to a tmp file, then renames. A rename on the same volume is atomic, so readers
+ * never see partially written content (same approach as writeFileAtomic in manifest-store.ts).
  */
 function writeFileAtomic(filePath: string, content: string): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true })
@@ -47,7 +47,7 @@ function loadMeta(cacheDir: string, videoId: string): CacheEntryMeta | null {
   try {
     return JSON.parse(fs.readFileSync(file, 'utf8')) as CacheEntryMeta
   } catch {
-    // 破損したメタデータはキャッシュミス扱いにして再ダウンロードで復旧させる。
+    // Treat corrupt metadata as a cache miss and recover by re-downloading.
     return null
   }
 }
@@ -59,7 +59,7 @@ function persistMeta(cacheDir: string, meta: CacheEntryMeta): void {
   )
 }
 
-/** cacheDir 配下の全メタデータを読み込む。Directory が存在しない場合は空配列を返す。 */
+/** Reads all metadata under cacheDir. Returns an empty array if the directory does not exist. */
 function listAllMeta(cacheDir: string): CacheEntryMeta[] {
   if (!fs.existsSync(cacheDir)) return []
   const entries: CacheEntryMeta[] = []
@@ -72,15 +72,15 @@ function listAllMeta(cacheDir: string): CacheEntryMeta[] {
         ) as CacheEntryMeta
       )
     } catch {
-      // 破損したメタデータは容量計算・削除対象選定から除外する (壊れたファイル自体は残るが実害は小さい)。
+      // Exclude corrupt metadata from size accounting and eviction selection (the broken file itself stays, with little harm).
     }
   }
   return entries
 }
 
 /**
- * キャッシュ総容量が maxBytes を超えている場合に、最終アクセスが古い順に削除すべき videoId を選ぶ純粋関数。
- * 超えていなければ空配列を返す。
+ * Pure function: when the total cache size exceeds maxBytes, picks the videoIds to evict, oldest last access first.
+ * Returns an empty array if the total does not exceed it.
  */
 export function selectEvictions(
   entries: CacheEntryMeta[],
@@ -133,7 +133,7 @@ function runEviction(
   }
 }
 
-/** TTL は見ない。 */
+/** Ignores the TTL. */
 function hasCompletedEntry(
   meta: CacheEntryMeta | null,
   filePath: string
@@ -153,9 +153,9 @@ function isFresh(
 }
 
 /**
- * videoId に対応するキャッシュ済み動画ファイルが TTL (`mediaCacheTtlMs`) 内で新鮮な場合のみ、
- * ダウンロードを起動せずにその絶対パスを返す。新鮮でなければ `null` を返す
- * ("hybrid" 配信モードが redirect にフォールバックすべきか判定するために使う)。
+ * Returns the absolute path of the cached video file for a videoId only if it is fresh
+ * (within the TTL, `mediaCacheTtlMs`), without starting a download. Returns `null` otherwise
+ * (used to decide whether the "hybrid" delivery mode should fall back to redirect).
  */
 export function peekFreshCache(
   config: AppConfig,
@@ -170,10 +170,10 @@ export function peekFreshCache(
 }
 
 /**
- * videoId に対応するキャッシュ済み動画ファイルが (ダウンロードが一度でも完了していれば) TTL を
- * 無視してその絶対パスを返す。一度もダウンロードが完了していない場合のみ `null` を返す。
- * TTL 切れで再ダウンロード中でも、直前まで有効だった完了済みファイルを配信し続ける
- * ("stale-while-revalidate") ために {@link getFreshOrStale} が使う。
+ * Returns the cached video file's absolute path for a videoId, ignoring the TTL, if a download has ever completed.
+ * Returns `null` only if none has completed.
+ * Used by {@link getFreshOrStale} to keep serving the previously valid completed file
+ * even while a TTL-expired entry is being re-downloaded ("stale-while-revalidate").
  */
 export function peekStaleCache(
   config: AppConfig,
@@ -188,12 +188,12 @@ export function peekStaleCache(
 }
 
 /**
- * videoId をダウンロードしてキャッシュに配置し、その絶対パスを返す。
- * 呼び出し側で新鮮なキャッシュが無いことを確認済みである前提で、{@link peekFreshCache} による
- * 判定を経ずに直接ミューテックス取得へ進む ({@link triggerBackgroundDownload} が既に
- * {@link peekFreshCache} 済みの videoId に対してこれを二重に呼ばず即座に応答を返せるようにするため)。
+ * Downloads a videoId into the cache and returns its absolute path.
+ * Skips the {@link peekFreshCache} check and goes straight to acquiring the mutex, because the caller
+ * has already confirmed there is no fresh cache. This lets {@link triggerBackgroundDownload} start
+ * without a second synchronous fs check.
  *
- * 同一 videoId への同時呼び出しは {@link downloadMutex} で直列化され、二重ダウンロードは起きない。
+ * Concurrent calls for the same videoId are serialized by {@link downloadMutex}, so no duplicate download occurs.
  */
 async function downloadAndCache(
   config: AppConfig,
@@ -212,7 +212,7 @@ async function downloadAndCache(
           const startedAt = performance.now()
           let phase = 'prepare'
           try {
-            // Mutex 取得待ちの間に別の呼び出しが先にダウンロードを終えている可能性があるため再チェックする。
+            // Another call may have finished the download while we waited for the mutex, so re-check.
             const recheckFresh = peekFreshCache(config, videoId)
             if (recheckFresh) return recheckFresh
 
@@ -265,9 +265,9 @@ async function downloadAndCache(
 }
 
 /**
- * videoId に対応するキャッシュ済み動画ファイルの絶対パスを返す。
- * キャッシュが無い、または TTL (`mediaCacheTtlMs`) を過ぎている場合は yt-dlp で再ダウンロードしてから返す
- * ("proxy" 配信モードの Media Endpoint はこの結果を `res.sendFile()` で配信する)。
+ * Returns the absolute path of the cached video file for a videoId.
+ * If there is no cache or the TTL (`mediaCacheTtlMs`) has passed, re-download with yt-dlp first
+ * (the "proxy" delivery Media Endpoint serves the result with `res.sendFile()`).
  */
 export async function getOrDownload(
   config: AppConfig,
@@ -279,13 +279,13 @@ export async function getOrDownload(
 }
 
 /**
- * videoId のダウンロードを開始するが、完了を待たずに即座に返る ("hybrid" 配信モードが
- * redirect フォールバック応答を先に返しつつ、裏で最新版を取得しておくために使う)。
- * 呼び出し元は既に {@link peekFreshCache} で新鮮なキャッシュが無いことを確認済みのため、
- * 判定を再実行せず直接 {@link downloadAndCache} を呼ぶ (302 応答前の同期的な fs アクセスを避けるため)。
- * 失敗はログに残すだけで呼び出し元には伝えない (呼び出し元は既に応答を返し終えているため)。
- * 同一 videoId が {@link prefetchAll} で既にキュー投入済みでも {@link downloadMutex} が
- * 重複ダウンロードを防ぐため、専用の優先度キューは設けていない。
+ * Starts downloading a videoId but returns immediately without waiting for completion (used by the
+ * "hybrid" delivery mode to return the redirect fallback first while fetching the latest version in the background).
+ * The caller has already confirmed via {@link peekFreshCache} that there is no fresh cache, so this calls
+ * {@link downloadAndCache} directly instead of re-checking (to avoid synchronous fs access before the 302).
+ * Failures are only logged, not reported to the caller (it has already responded).
+ * Even if the same videoId is already queued by {@link prefetchAll}, {@link downloadMutex} prevents
+ * duplicate downloads, so there is no dedicated priority queue.
  */
 export function triggerBackgroundDownload(
   config: AppConfig,
@@ -295,14 +295,14 @@ export function triggerBackgroundDownload(
 }
 
 /**
- * videoId に対応するキャッシュ済み動画ファイルを、新鮮 (TTL 内) ならそのまま返す。
- * TTL 切れでも、直前まで有効だった完了済みファイルがあれば ("stale-while-revalidate") それを
- * そのまま返しつつ、裏で {@link triggerBackgroundDownload} を起動する
- * (次回以降のリクエストから新しいファイルに切り替わる)。一度もダウンロードが完了していない
- * 場合のみ `null` を返す (呼び出し元は従来通り「キャッシュなし」として扱う)。
+ * Returns the cached video file for a videoId as-is if fresh (within TTL).
+ * If the TTL has expired but a previously valid completed file exists ("stale-while-revalidate"),
+ * return it anyway and start {@link triggerBackgroundDownload} in the background
+ * (later requests get the new file). Returns `null` only if no download has ever completed
+ * (callers treat that as "not cached", as before).
  *
- * {@link peekFreshCache} / {@link peekStaleCache} を素直に呼ぶと meta 読み込みや
- * `persistMeta` が二重に走るため、ここでは meta を 1 回だけ読んでどちらの判定にも使い回す。
+ * Calling {@link peekFreshCache} / {@link peekStaleCache} naively would read the meta and run
+ * `persistMeta` twice, so the meta is read once here and reused for both checks.
  */
 export function getFreshOrStale(
   config: AppConfig,
@@ -320,20 +320,20 @@ export function getFreshOrStale(
   return filePath
 }
 
-/** ボット検知発生時に Prefetch 全体を一時停止する長さ。ponytail: 固定 5 分、可変にする必要が出たら env 化する。 */
+/** How long the whole prefetch pauses after bot detection. ponytail: fixed 5 minutes, make it an env var if it needs to vary. */
 const BOT_DETECTION_COOLDOWN_MS = 5 * 60 * 1000
 
-/** timeout 等の一時的エラーをリトライするまでの待機時間。 */
+/** Wait before retrying a transient error such as a timeout. */
 const TRANSIENT_RETRY_DELAY_MS = 1000
 
-/** 指定ミリ秒だけ待機する。 */
+/** Waits for the given number of milliseconds. */
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 /**
- * yt-dlp の stderr から、YouTube 側のボット検知によるブロックかどうかを判定する。
- * 個々の動画の問題ではなく一時的な IP ブロックのため、リトライではなく Prefetch 全体のクールダウンで扱う。
+ * Whether the yt-dlp stderr shows a block by YouTube's bot detection.
+ * This is a temporary IP block rather than a per-video problem, so it is handled with a prefetch-wide cooldown, not retries.
  */
 function isBotDetectionError(err: unknown): boolean {
   return (
@@ -342,7 +342,7 @@ function isBotDetectionError(err: unknown): boolean {
   )
 }
 
-/** yt-dlp の stderr から、リトライしても回復しない恒久的な動画不可用エラーかどうかを判定する。 */
+/** Whether the yt-dlp stderr shows a permanent video-unavailable error that retrying will not fix. */
 function isPermanentVideoError(err: unknown): boolean {
   return (
     err instanceof YtdlpError &&
@@ -352,7 +352,7 @@ function isPermanentVideoError(err: unknown): boolean {
   )
 }
 
-/** Prefetch 失敗をログに残す。 */
+/** Logs a prefetch failure. */
 function logPrefetchFailure(videoId: string, err: unknown, suffix = ''): void {
   logger.warn('media.prefetch.failed', 'Video prefetch failed', {
     video_id: videoId,
@@ -362,14 +362,14 @@ function logPrefetchFailure(videoId: string, err: unknown, suffix = ''): void {
 }
 
 /**
- * 複数 videoId を並行数を絞りつつ事前ダウンロードする (Playlist Refresh 後のバックグラウンド Prefetch 用)。
- * 1 本の失敗が他の Prefetch を止めないよう、失敗はログに残すだけで例外を投げない。
+ * Pre-downloads multiple videoIds with limited concurrency (background prefetch after a Playlist Refresh).
+ * Failures are only logged, never thrown, so one failure does not stop the other prefetches.
  *
- * エラー種別で挙動を分ける:
- * - ボット検知: リトライせず、以降の videoId を {@link BOT_DETECTION_COOLDOWN_MS} の間スキップする
- *   (連打が更なるブロックを招くのを防ぐ。未処理分は次回の Refresh/Prefetch サイクルに任せる)。
- * - 恒久的な動画不可用エラー: リトライしても無駄なので即座に諦める。
- * - それ以外 (timeout など一時的なエラー): 短い待機を挟んで 1 回だけリトライする。
+ * Behavior by error class:
+ * - Bot detection: no retry; skip the remaining videoIds for {@link BOT_DETECTION_COOLDOWN_MS}
+ *   (rapid retries would invite further blocking; the rest is left to the next Refresh/Prefetch cycle).
+ * - Permanent video-unavailable error: retrying is pointless, so give up immediately.
+ * - Anything else (transient, e.g. timeout): retry once after a short wait.
  */
 export async function prefetchAll(
   config: AppConfig,
@@ -383,9 +383,9 @@ export async function prefetchAll(
       let cursor = 0
       let cooldownUntil = 0
 
-      // 1 回目・リトライのどちらで発生したエラーも同じ分類を通す (リトライ側だけボット検知を
-      // 見逃してクールダウンが発動しない、といった一貫性の欠如を避けるため)。
-      /** 動画を取得し、分類に応じて retry・cooldown・failure log を行う。 */
+      // Errors from the first try and the retry go through the same classification, so the retry
+      // cannot miss bot detection and skip the cooldown.
+      /** Fetches a video, then retries, cools down or logs the failure depending on the error class. */
       async function attempt(videoId: string): Promise<void> {
         for (let attemptNumber = 1; attemptNumber <= 2; attemptNumber++) {
           try {
@@ -415,14 +415,14 @@ export async function prefetchAll(
         }
       }
 
-      /** 共有 cursor から次の動画を取得して指定 concurrency まで処理する。 */
+      /** Takes the next video from the shared cursor, up to the given concurrency. */
       async function worker(): Promise<void> {
         while (cursor < videoIds.length) {
           const videoId = videoIds[cursor]
           cursor += 1
           if (Date.now() < cooldownUntil) {
-            // 残り全件を同期的に消費してログを連発しないよう、continue ではなく打ち切る
-            // (未処理分は次回の Refresh/Prefetch サイクルに任せる)。
+            // Stop rather than `continue`, so the rest is not consumed synchronously with a flood of logs
+            // (unprocessed videos are left to the next Refresh/Prefetch cycle).
             logger.warn(
               'media.prefetch.cooldown',
               'Prefetch cooldown is active; remaining videos were skipped',

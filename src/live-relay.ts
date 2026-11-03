@@ -13,51 +13,51 @@ import {
   touchVodRelay,
 } from './vod-relay'
 
-/** Live 再公開の master playlist ファイル名 (`ensureLiveRelay` が返す outDir 配下に固定で置く)。 */
+/** Fixed file name of the live master playlist, placed under the outDir returned by `ensureLiveRelay`. */
 export const LIVE_PLAYLIST_FILE_NAME = 'live.m3u8'
 
-/** ffmpeg `-f hls` が書き出す segment ファイル名のパターン (`live0.ts`, `live1.ts`, ...)。 */
+/** Segment file name pattern written by ffmpeg `-f hls` (`live0.ts`, `live1.ts`, ...). */
 const SEGMENT_FILE_PATTERN = /^live\d+\.ts$/
 
-/** ffmpeg プロセスに SIGTERM を送ってから実際の終了を待つ猶予。超過時は SIGKILL へ切り替える。 */
+/** Grace period between SIGTERM and SIGKILL when stopping ffmpeg. */
 const STOP_GRACE_MS = 5000
 
 /**
- * `waitForFirstSegment` が最初の segment を待つ最大時間。`-hls_time 4` の数倍を確保し、
- * ffmpeg がプロセスを終了させずにハングした場合でも `ensureLiveRelay` が応答を返せるようにする。
+ * Max wait for the first segment. Several times `-hls_time 4`, so `ensureLiveRelay` still
+ * responds when ffmpeg hangs without exiting.
  */
 const FIRST_SEGMENT_TIMEOUT_MS = 30_000
 
-/** videoId 単位の Live 再公開の実行状態。 */
+/** Per-videoId live relay state. */
 interface LiveRelayState {
   videoId: string
   ffmpegProcess: ChildProcess
   outDir: string
-  /** 最初のセグメント書き出し完了後に non-null になる (視聴可能になったことを示す)。 */
+  /** Non-null once the first segment is written (i.e. playable). */
   playlistPath: string | null
   startedAt: number
   operationId: string
   lastAccessedAt: number
   /**
-   * ffmpeg が起動直後 (最初のセグメント書き出し前) に失敗したことを示す。
-   * 成功した場合は誰も resolve しないまま放置される。
+   * Resolves if ffmpeg fails during startup (before the first segment).
+   * Never resolved on success.
    */
   startupFailure: Promise<Error>
-  /** ffmpeg プロセスの終了 (`close` イベント) を示す。`stopLiveRelay` が `fs.rm` の前に待ち合わせる。 */
+  /** Resolves when the ffmpeg process closes; `stopLiveRelay` waits on it before `fs.rm`. */
   exited: Promise<void>
 }
 
-/** videoId 単位で同時 `ensureLiveRelay()` 呼び出しが二重に ffmpeg を起動しないようにする (media-cache.ts の downloadMutex と同じ考え方)。 */
+/** Prevents concurrent `ensureLiveRelay()` calls for one videoId from spawning ffmpeg twice (same idea as downloadMutex in media-cache.ts). */
 const relayMutex = new KeyedMutex()
 
-/** videoId ごとの実行中 Live 再公開状態。 */
+/** Running live relays by videoId. */
 const relays = new Map<string, LiveRelayState>()
 
 /**
- * videoId の Live 再公開ファイル (playlist + segment) が置かれるディレクトリの絶対パスを返す。
- * `encodeURIComponent(videoId)` を使うのは `media-cache.ts` の `cacheFilePath()` と同じ
- * path traversal 対策 (Live 再公開ファイルの配信ルート (`routes/live.ts`) からも参照する)。
- * videoId が YouTube の形式 (`VIDEO_ID_PATTERN`) を満たさない場合はエラーを投げる。
+ * Absolute directory holding a videoId's relay files (playlist + segments).
+ * `encodeURIComponent(videoId)` is the same path-traversal guard as `cacheFilePath()` in
+ * `media-cache.ts` (also used by the serving route, `routes/live.ts`).
+ * Throws if videoId does not match `VIDEO_ID_PATTERN`.
  */
 export function liveRelayDirFor(config: AppConfig, videoId: string): string {
   if (!VIDEO_ID_PATTERN.test(videoId)) {
@@ -67,11 +67,10 @@ export function liveRelayDirFor(config: AppConfig, videoId: string): string {
 }
 
 /**
- * outDir 配下に最初の segment ファイルが書き出されるまで待つ。既に存在していれば即座に解決する。
- * ffmpeg が実際にファイルを書き出すのを `fs.watch` で検知する (ポーリングより低遅延・低コスト)。
- * `failure` (ffmpeg の spawn エラー・起動中の異常終了を示す) が先に解決した場合、または
- * `FIRST_SEGMENT_TIMEOUT_MS` を超過した場合は reject する (ffmpeg がプロセスを終了させずに
- * ハングするケースにも対応するため、プロセスの終了とは独立したタイムアウトを設ける)。
+ * Waits until the first segment file appears in outDir (resolves immediately if present).
+ * Uses `fs.watch` rather than polling for lower latency and cost.
+ * Rejects if `failure` (spawn error or abnormal exit during startup) resolves first, or after
+ * `FIRST_SEGMENT_TIMEOUT_MS` (independent of process exit, to cover an ffmpeg that hangs).
  */
 async function waitForFirstSegment(
   outDir: string,
@@ -99,7 +98,7 @@ async function waitForFirstSegment(
       if (!filename || !SEGMENT_FILE_PATTERN.test(filename)) return
       finish(resolve)
     })
-    // 初回 scan と watcher 登録の間に segment が作成される race を避けるため、watcher 登録後に再確認する。
+    // Re-check after registering the watcher to close the race with a segment created between the first scan and the watch.
     fs.promises
       .readdir(outDir)
       .then((entries) => {
@@ -124,15 +123,14 @@ async function waitForFirstSegment(
         })
       })
       .catch(() => {
-        // failure は resolve のみで reject しない Promise だが、no-floating-promises 対策として
-        // 空の catch を付与する。
+        // failure only ever resolves; the empty catch satisfies no-floating-promises.
       })
   })
 }
 
 /**
- * ffmpeg プロセスに SIGTERM を送った後、`state.exited` (`close` イベント) の解決を待つ。
- * `STOP_GRACE_MS` を超えても終了しない場合は SIGKILL へ切り替える (Zombie 化防止)。
+ * Waits for `state.exited` (`close` event) after SIGTERM was sent.
+ * Switches to SIGKILL after `STOP_GRACE_MS` to avoid zombies.
  */
 function waitForFfmpegExit(state: LiveRelayState): Promise<void> {
   return new Promise((resolve) => {
@@ -145,17 +143,15 @@ function waitForFfmpegExit(state: LiveRelayState): Promise<void> {
         resolve()
       })
       .catch(() => {
-        // exited は resolve のみで reject しない Promise だが、no-floating-promises 対策として
-        // 空の catch を付与する。
+        // exited only ever resolves; the empty catch satisfies no-floating-promises.
       })
   })
 }
 
 /**
- * videoId の Live 再公開状態を破棄する。ffmpeg プロセスへ SIGTERM を送り、実際の終了を
- * 待ってから (旧プロセスが outDir へ書き込み中に新プロセスが同じ outDir を使い始める競合を
- * 防ぐため) 再公開ファイルを削除する
- * (URL 失効・配信終了時の後始末、eviction、テスト用の強制停止のいずれからも呼ばれる)。
+ * Tears down a videoId's live relay: SIGTERM, wait for the process to exit, then delete the
+ * files (so a new process never shares an outDir with an old one still writing).
+ * Called on URL expiry / stream end, eviction, and forced stops in tests.
  */
 export async function stopLiveRelay(videoId: string): Promise<void> {
   const state = relays.get(videoId)
@@ -167,15 +163,13 @@ export async function stopLiveRelay(videoId: string): Promise<void> {
 }
 
 /**
- * lastAccessedAt が idleTtlMs を超えている videoId の Live 再公開プロセスを止める。
- * まだ最初のセグメントを書き出せていない (起動中の) relay は、起動にどれだけ時間がかかっていても
- * idle とはみなさない。lastAccessedAt は起動完了後にしか更新されないため、除外しないと起動が
- * 長引くほど誤って evict されやすくなってしまう (起動そのものの失敗は `waitForFirstSegment` の
- * タイムアウトが処理する)。
- * ponytail: 専用の setInterval は持たず `ensureLiveRelay()` 呼び出しへインライン化する
- * (新規リクエストが来ない限り古いプロセスが残り得るが、本プロジェクトに setInterval ベースの
- * バックグラウンドジョブが無く、VOD の runEviction() も downloadAndCache() 完了時にインラインで
- * 呼ばれる既存パターンに揃える。専用ジョブが必要になったら追加する)。
+ * Stops relays whose lastAccessedAt exceeds idleTtlMs.
+ * Relays still starting (no first segment yet) are never treated as idle: lastAccessedAt is only
+ * updated after startup, so a slow start would otherwise be evicted (startup failure itself is
+ * handled by the `waitForFirstSegment` timeout).
+ * ponytail: no dedicated setInterval here; evaluated inline in `ensureLiveRelay()` like VOD's
+ * runEviction() in downloadAndCache(). Stale processes can linger until the next request;
+ * add a background job if that matters.
  */
 async function evictIdleLiveRelays(idleTtlMs: number): Promise<void> {
   const now = Date.now()
@@ -189,14 +183,14 @@ async function evictIdleLiveRelays(idleTtlMs: number): Promise<void> {
   await Promise.all(targets.map((videoId) => stopLiveRelay(videoId)))
 }
 
-/** プロセス起動時に 1 回だけ実行する、前回プロセスが残した再公開ディレクトリの削除。 */
+/** One-time cleanup of relay directories left by a previous process. */
 let orphanCleanup: Promise<void> | null = null
 
-/** 再公開が生成するファイル名。旧版が VOD 用に書いた `input.m3u8` の残りも一掃できるよう含める。 */
+/** File names a relay generates, including leftover `input.m3u8` from an older VOD implementation. */
 const RELAY_FILE_PATTERN =
   /^(?:live\.m3u8|input\.m3u8|live\d+\.ts|seg\d+\.ts|[av]\d+\.src)(?:\.tmp)?$/
 
-/** ディレクトリが、再公開が生成したファイルだけで構成されているか。読めない場合は false。 */
+/** Whether the directory contains only relay-generated files. False if unreadable. */
 async function isRelayGeneratedDir(dir: string): Promise<boolean> {
   const entries = await fs.promises
     .readdir(dir, { withFileTypes: true })
@@ -209,12 +203,11 @@ async function isRelayGeneratedDir(dir: string): Promise<boolean> {
 }
 
 /**
- * `liveRelayOutDir` 直下の、前回プロセスが残した再公開ディレクトリを削除する。再起動前の ffmpeg が残した
- * segment (VOD は全編分) はどの `relays` からも参照されず、idle eviction の対象にもならないため、最初の
- * 呼び出しで一掃する。`LIVE_RELAY_OUT_DIR` は任意のパスを指定でき専用ディレクトリとは限らない (`./data` など
- * 既存データを含む場所を誤って指定していても消さない) ため、名前が videoId の形式 (`VIDEO_ID_PATTERN`) で、
- * 中身が再公開の生成ファイルだけのディレクトリに限って削除する。それ以外のエントリは削除しない。
- * 全呼び出し元が同じ Promise を待つので、この削除が終わる前に新しい再公開が起動して巻き込まれることはない。
+ * Deletes relay directories under `liveRelayOutDir` left by a previous process. Their segments
+ * (whole-video for VOD) are referenced by no `relays` entry and never idle-evicted, so the first
+ * call sweeps them. `LIVE_RELAY_OUT_DIR` may point at a non-dedicated path (e.g. `./data`), so
+ * only directories named like a videoId (`VIDEO_ID_PATTERN`) and containing only relay-generated
+ * files are removed. All callers await the same promise, so a new relay can't start mid-cleanup.
  */
 function cleanupOrphanDirs(config: AppConfig): Promise<void> {
   orphanCleanup ??= (async () => {
@@ -237,17 +230,17 @@ function cleanupOrphanDirs(config: AppConfig): Promise<void> {
   return orphanCleanup
 }
 
-/** 周期スイープの間隔。VOD は多重化済み segment を保持するため、リクエストが無くても idle 削除と容量制限を評価し続ける。 */
+/** Sweep interval. VOD keeps muxed segments, so idle deletion and the size cap must be evaluated even without requests. */
 const SWEEP_INTERVAL_MS = 15_000
 
-/** 周期スイープが参照する直近の config。`ensureLiveRelay` 呼び出しごとに更新する。 */
+/** Latest config used by the periodic sweep; updated on every `ensureLiveRelay` call. */
 let sweepConfig: AppConfig | null = null
 let sweeper: ReturnType<typeof setInterval> | null = null
 
 /**
- * Live の idle 削除 (`evictIdleLiveRelays`) と VOD の idle 削除・容量制限 (`evictVodRelays`) を周期的に実行する。
- * `ensureLiveRelay` 内のインライン評価は新規リクエストが来ない限り走らないため、最後の視聴者が離れた後も
- * ディスクを解放できるようにする。`unref` でプロセス終了は妨げない。
+ * Periodically runs live idle eviction (`evictIdleLiveRelays`) and VOD idle eviction / size cap
+ * (`evictVodRelays`). The inline evaluation in `ensureLiveRelay` only runs on new requests, so
+ * this frees disk after the last viewer leaves. `unref` keeps it from blocking process exit.
  */
 function ensureSweeper(config: AppConfig): void {
   sweepConfig = config
@@ -275,7 +268,7 @@ function ensureSweeper(config: AppConfig): void {
   sweeper.unref()
 }
 
-/** テスト用: 周期スイープと残存ディレクトリ削除の状態を初期化する。 */
+/** For tests: reset the periodic sweep and orphan-cleanup state. */
 export function resetLiveRelaySweepForTests(): void {
   if (sweeper !== null) clearInterval(sweeper)
   sweeper = null
@@ -283,7 +276,7 @@ export function resetLiveRelaySweepForTests(): void {
   orphanCleanup = null
 }
 
-/** videoId の再公開ファイル (Live / VOD) の配信ルートへアクセスがあった際に呼ぶ。 */
+/** Call when a relay file (live or VOD) is served. */
 export function touchLiveRelay(videoId: string): void {
   touchVodRelay(videoId)
   const state = relays.get(videoId)
@@ -291,12 +284,12 @@ export function touchLiveRelay(videoId: string): void {
 }
 
 /**
- * Live の HLS 入力を ffmpeg でローカルに再公開する。直近の窓のみ残す。
- * `-c copy` により再エンコードなしでコンテナのみ HLS に変換する (Docker 実機検証済みのコマンド)。
- * `temp_file` フラグにより segment/playlist の書き込みを一時ファイル経由の rename にし、
- * `waitForFirstSegment` の `fs.watch` や `res.sendFile()` が書き込み途中のファイルを掴むのを防ぐ
- * (rename 前の `.tmp` サフィックス付きファイル名は `routes/live.ts` の許可パターンにマッチしないため、
- * 誤って配信されることもない)。stdout は使わないため `ignore` にし、stderr のみ監視してログに残す。
+ * Republishes a live HLS input locally with ffmpeg, keeping only a recent window.
+ * `-c copy` only remuxes into HLS, no re-encode.
+ * `temp_file` writes segments/playlist via temp file + rename so `fs.watch` in
+ * `waitForFirstSegment` and `res.sendFile()` never see partial files (`.tmp` names don't match
+ * the allowed pattern in `routes/live.ts`, so they are never served). stdout is unused
+ * (`ignore`); only stderr is captured for logging.
  */
 function startFfmpeg(outDir: string, input: string): ChildProcess {
   const playlistPath = path.join(outDir, LIVE_PLAYLIST_FILE_NAME)
@@ -324,9 +317,9 @@ function startFfmpeg(outDir: string, input: string): ChildProcess {
 }
 
 /**
- * 起動中 (`playlistPath === null`) の state であれば最初のセグメントを待ってから、
- * そうでなければ即座に、`ensureLiveRelay` の戻り値を組み立てる。起動失敗時は `stopLiveRelay`
- * で後始末してからエラーを返す。
+ * Builds the `ensureLiveRelay` result: waits for the first segment if the state is still
+ * starting (`playlistPath === null`), otherwise returns immediately. On startup failure, cleans up
+ * with `stopLiveRelay` and returns an error.
  */
 async function awaitPlayback(
   state: LiveRelayState
@@ -345,13 +338,13 @@ async function awaitPlayback(
   return { outDir: state.outDir, playlistFileName: LIVE_PLAYLIST_FILE_NAME }
 }
 
-/** 新規に Live 再公開を起動する (呼び出し元で Map に既存 state が無いことを確認済みの前提)。 */
+/** Starts a new live relay (caller has verified no state exists in the Map). */
 async function startLiveRelay(
   config: AppConfig,
   videoId: string
 ): Promise<{ outDir: string; playlistFileName: string } | { error: string }> {
-  // yt-dlp 呼び出し (resolveVideoInfo) の前に検証する。無効な videoId で無駄な呼び出しを
-  // させないためと、以降のファイルパス構築のいずれもこの検証を経由させるため。
+  // Validate before calling yt-dlp (resolveVideoInfo): avoids a pointless call for an invalid
+  // videoId and guarantees every later path construction goes through this check.
   let outDir: string
   try {
     outDir = liveRelayDirFor(config, videoId)
@@ -368,8 +361,8 @@ async function startLiveRelay(
     return { error: 'failed to resolve HLS manifest' }
   }
 
-  // VOD で音声込みの単一 variant が無い場合 (hlsIsMaster) は、ffmpeg プロセスを常駐させず segment 単位で
-  // オンデマンドに多重化する (`vod-relay.ts`)。
+  // VOD without a single audio-bearing variant (hlsIsMaster): mux per segment on demand instead
+  // of keeping an ffmpeg process alive (`vod-relay.ts`).
   if (info.hlsIsMaster && !info.isLive) {
     return ensureVodRelay(config, videoId, outDir, info.hlsMasterManifestUrl)
   }
@@ -410,8 +403,8 @@ async function startLiveRelay(
     stderrTail = (stderrTail + text).slice(-STDERR_TAIL_MAX)
   })
 
-  // spawn 自体の失敗 (ffmpeg バイナリが無い等) は 'error' で通知される。リスナーが無いと
-  // Node プロセス全体を落とす未処理例外になるため、必ず登録する。
+  // A spawn failure (e.g. ffmpeg binary missing) is reported via 'error'. Without a listener it
+  // becomes an uncaught exception that kills the process, so always register one.
   ffmpegProcess.on('error', (err) => {
     logger.error('relay.live.lifecycle.failed', 'Failed to spawn ffmpeg', {
       video_id: videoId,
@@ -437,11 +430,11 @@ async function startLiveRelay(
 
   ffmpegProcess.on('close', (code) => {
     signalExited()
-    // Map の現在値がこの close ハンドラの state と一致する場合のみ後始末する。stopLiveRelay() /
-    // eviction が既にこの videoId を削除・再起動済みの場合、ここで消してしまうと再起動後の
-    // 新しい state・outDir を巻き込んで壊してしまう (outDir は videoId から決定的なため)。
-    // stopLiveRelay() 起因の close はここに到達する前に Map から既に削除されているため、
-    // このブロックに到達する non-zero code は常に stopLiveRelay() 以外が原因の異常終了である。
+    // Clean up only if the Map still holds this handler's state. If stopLiveRelay() / eviction
+    // already removed or restarted this videoId, deleting here would clobber the new state and
+    // outDir (outDir is deterministic per videoId).
+    // A close caused by stopLiveRelay() never reaches here (already removed from the Map), so a
+    // non-zero code here is always an unexpected exit.
     if (relays.get(videoId) !== state) return
     relays.delete(videoId)
     if (code === 0) {
@@ -486,9 +479,9 @@ async function startLiveRelay(
 }
 
 /**
- * videoId の Live 再公開が実行中でなければ起動し、再公開先ディレクトリと master playlist の
- * ファイル名を返す。実行中ならそのまま返す (同一 videoId への同時アクセスで二重起動しない)。
- * まだ再公開が始まっていない場合は、最初のセグメントが書き出されるまで待ってから返す。
+ * Starts the live relay for videoId if not running and returns its output directory and master
+ * playlist file name; returns the existing one otherwise (concurrent calls don't double-start).
+ * If the relay isn't playable yet, waits for the first segment before returning.
  */
 export async function ensureLiveRelay(
   config: AppConfig,
@@ -507,8 +500,8 @@ export async function ensureLiveRelay(
   if (vod) return vod
 
   return relayMutex.run(videoId, async () => {
-    // Mutex 取得待ちの間に別の呼び出しが先に起動を終えている可能性があるため再チェックする
-    // (media-cache.ts の downloadAndCache() と同じ理由)。
+    // Re-check: another caller may have finished starting while we waited for the mutex
+    // (same reason as downloadAndCache() in media-cache.ts).
     const recheck = relays.get(videoId)
     if (recheck) {
       recheck.lastAccessedAt = Date.now()

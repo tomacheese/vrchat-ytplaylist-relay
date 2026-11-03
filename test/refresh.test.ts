@@ -14,7 +14,7 @@ import {
 } from '../src/refresh'
 import type { Manifest } from '../src/types'
 
-/** JSON ログを object として検証し、field assertion に使える形で返す。 */
+/** Parses a JSON log line as an object so field assertions can use it. */
 function parseLogRecord(line: string): Record<string, unknown> {
   const parsed: unknown = JSON.parse(line)
   assert.ok(parsed && typeof parsed === 'object' && !Array.isArray(parsed))
@@ -34,8 +34,8 @@ function baseConfig(
     configPath: 'test-config',
     dataDir: tempDataDir(),
     adminToken: null,
-    // 実在しないコマンドを指す: このテストでは yt-dlp が実際に起動されないこと、
-    // または起動が失敗として扱われることを検証する。
+    // Points at a nonexistent command: verifies that yt-dlp is never actually launched in this test,
+    // or that a launch failure is treated as a failure.
     ytdlpPath: 'yt-dlp-does-not-exist',
     defaultMaxSlots: 100,
     ytdlpTimeoutMs: 1000,
@@ -146,8 +146,8 @@ test('failed playlist refresh logs structured error, operation ID, and duration'
 
 test('refreshAll targets playlistIds with persisted slot state when the allowlist is empty', async () => {
   const config = baseConfig('unused', { playlists: [] })
-  // pnpm refresh CLI は Server と別プロセスで動きメモリキャッシュを共有しないため、
-  // refreshAllTargets の判定材料は Disk 上の Position Pool 状態でなければならない。
+  // The pnpm refresh CLI runs in a separate process from the server and shares no memory cache,
+  // so refreshAllTargets must decide from the on-disk Position Pool state.
   const { state } = buildManifest(
     null,
     'pl-seen-before',
@@ -349,9 +349,9 @@ test('resolveVideoIdForPosition does not retry refresh within manifestCacheTtlMs
   )
   persistSlotState(config.dataDir, { ...state, lastRefreshAt: Date.now() })
 
-  // position 1 は存在しない。直近 Refresh 済み (かつ成功) のため Refresh は再試行されないはずで、
-  // その場合 error は必ず 'unknown position' になる (Refresh が走れば
-  // 'yt-dlp-does-not-exist' に起因する別のエラーメッセージになるため区別できる)。
+  // Position 1 does not exist. It was refreshed recently (successfully), so Refresh must not be retried,
+  // and the error is therefore always 'unknown position' (if Refresh ran, a different error caused by
+  // 'yt-dlp-does-not-exist' would appear, so the two are distinguishable).
   const result = await resolveVideoIdForPosition(config, 'pl-recent-refresh', 1)
 
   assert.deepEqual(result, { error: 'unknown position', reason: 'not_found' })
@@ -373,8 +373,8 @@ test('resolveVideoIdForPosition surfaces the persisted lastError when a recent r
     lastError: 'network unreachable',
   })
 
-  // position 1 は存在せず、直近の Refresh は失敗記録 (lastRefreshOk: false) が付いている。
-  // 再試行はしないが、握りつぶさず lastError をそのまま返すはず。
+  // Position 1 does not exist, and the latest Refresh has a failure record (lastRefreshOk: false).
+  // It is not retried, but lastError must be returned as is rather than swallowed.
   const result = await resolveVideoIdForPosition(config, 'pl-recent-failure', 1)
 
   assert.deepEqual(result, {

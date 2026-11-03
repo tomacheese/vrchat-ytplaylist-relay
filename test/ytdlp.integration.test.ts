@@ -6,15 +6,15 @@ import { test } from 'vitest'
 import { downloadVideo, fetchPlaylistEntries } from '../src/ytdlp'
 
 /**
- * 実際の yt-dlp バイナリを起動し、実在の YouTube Playlist に対して疎通確認する統合テスト。
- * ネットワークと外部コマンドに依存するため CI では常時実行せず、RUN_INTEGRATION=1 のときのみ実行する。
+ * Integration test that launches the real yt-dlp binary and smoke-tests it against a real YouTube Playlist.
+ * It depends on the network and an external command, so it does not always run in CI; it runs only when RUN_INTEGRATION=1.
  */
 const shouldRun = process.env.RUN_INTEGRATION === '1'
 
 test.skipIf(!shouldRun)(
   "fetchPlaylistEntries returns real entries for the scene's actual playlists",
   async () => {
-    // yamaplayerremoteplaylist.unity に実在する 3 Playlist のうち、最も件数が読みやすい "*でにーム" を使う。
+    // Of the 3 Playlists that exist in yamaplayerremoteplaylist.unity, use the one with the most readable entry count, "*でにーム".
     const entries = await fetchPlaylistEntries(
       'PLOCwArr8ScAzVOE91TT7kK3ZCHbYnPV-W',
       {
@@ -43,7 +43,7 @@ test.skipIf(!shouldRun)(
     )
     const destPath = path.join(tmpDir, 'video.mp4')
     try {
-      // q-4GMtXpFUc: README に記載の実在 Playlist ("*でにーム") に含まれる動画の 1 つ。短くて 1080p を持つもの。
+      // q-4GMtXpFUc: one video in the real Playlist ("*でにーム") listed in the README. It is short and has 1080p.
       await downloadVideo('q-4GMtXpFUc', destPath, {
         ytdlpPath: process.env.YTDLP_PATH ?? 'yt-dlp',
         timeoutMs: 600_000,

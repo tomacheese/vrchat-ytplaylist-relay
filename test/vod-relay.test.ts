@@ -6,14 +6,14 @@ import path from 'node:path'
 import { afterEach, beforeEach, test, vi } from 'vitest'
 import type { AppConfig } from '../src/config'
 
-/** JSON ログを object として検証し、field assertion に使える形で返す。 */
+/** Parses a JSON log line into an object for field assertions. */
 function parseLogRecord(line: string): Record<string, unknown> {
   const parsed: unknown = JSON.parse(line)
   assert.ok(parsed && typeof parsed === 'object' && !Array.isArray(parsed))
   return parsed as Record<string, unknown>
 }
 
-/** 偽 ffmpeg: 最終引数の出力ファイルへ入力ファイルの内容を連結して書き、正常終了する。 */
+/** Fake ffmpeg: concatenates the input files into the last-argument output file and exits successfully. */
 const spawnMock = vi.fn((_cmd: string, args: string[]) => {
   const inputs = args.flatMap((a, i) => (args[i - 1] === '-i' ? [a] : []))
   const out = args.at(-1) ?? ''
@@ -37,7 +37,7 @@ const MASTER = [
   '',
 ].join('\n')
 
-/** 3 segment の fMP4 相当の media playlist (init 付き)。durations を指定すると EXTINF を変えられる。 */
+/** fMP4-like media playlist with 3 segments (with init). `durations` overrides EXTINF. */
 function mediaPlaylist(
   prefix: string,
   durations: number[] = [5, 5, 2.5]
@@ -204,7 +204,7 @@ test('ensureVodSegment muxes one segment on demand (init prepended), shares conc
     !spawnMock.mock.calls.flatMap(([, a]) => a).includes('-output_ts_offset')
   )
   assert.ok(!spawnMock.mock.calls[0][1].includes('-copyts'))
-  // 先読みの segment 1 も作られる。作業用の一時ファイルは残らない。
+  // Prefetched segment 1 is also created. No temporary work files remain.
   await vi.waitFor(() => {
     assert.ok(fs.existsSync(path.join(outDir, 'seg1.ts')))
   })

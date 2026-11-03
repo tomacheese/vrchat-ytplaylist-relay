@@ -3,7 +3,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import type { Manifest, SlotAllocationState, YtdlpFlatEntry } from './types'
 
-/** Playlist の Position Pool (maxSlots) が使い切られた際に投げる。 */
+/** Thrown when a Playlist's Position Pool (maxSlots) is used up. */
 export class SlotPoolExhaustedError extends Error {
   constructor(playlistId: string, maxSlots: number) {
     super(
@@ -22,8 +22,8 @@ function slotStatePath(dataDir: string, playlistId: string): string {
 }
 
 /**
- * tmp ファイルへ書いてから rename する。同一ボリューム上の rename は atomic なので、
- * 読み手が書きかけの内容を見ることはない。
+ * Writes to a temp file, then renames it. A rename on the same volume is atomic,
+ * so readers never see partially written content.
  */
 function writeFileAtomic(filePath: string, content: string): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true })
@@ -33,8 +33,8 @@ function writeFileAtomic(filePath: string, content: string): void {
 }
 
 /**
- * playlistId の永続化済み Position Pool 状態を読み込む。
- * @returns まだ一度も Refresh されていない場合は null
+ * Loads the persisted Position Pool state for a playlistId.
+ * @returns null if it has never been refreshed
  */
 export function loadSlotState(
   dataDir: string,
@@ -45,7 +45,7 @@ export function loadSlotState(
   return JSON.parse(fs.readFileSync(file, 'utf8')) as SlotAllocationState
 }
 
-/** Position Pool 状態を atomic に永続化する。 */
+/** Persists the Position Pool state atomically. */
 export function persistSlotState(
   dataDir: string,
   state: SlotAllocationState
@@ -74,12 +74,12 @@ function emptySlotState(
   }
 }
 
-/** Track の順序 + videoId + Title から安定した hash を計算する (generation 更新要否の判定にのみ使う)。 */
+/** Computes a stable hash from Track order + videoId + Title (used only to decide whether to bump generation). */
 function computeContentHash(entries: YtdlpFlatEntry[]): string {
   const hash = crypto.createHash('sha256')
   for (const entry of entries) {
-    // videoId / title に区切り文字が含まれても hash が衝突しないよう、要素ごとに
-    // JSON.stringify でエスケープしてから改行区切りで連結する。
+    // Escape each element with JSON.stringify before joining with newlines,
+    // so delimiter characters in videoId / title cannot cause hash collisions.
     hash.update(JSON.stringify([entry.id, entry.title ?? '']))
     hash.update('\n')
   }
@@ -87,16 +87,16 @@ function computeContentHash(entries: YtdlpFlatEntry[]): string {
 }
 
 /**
- * 直前の Position Pool 状態と yt-dlp から得た最新の Playlist 内容から、次の Position Pool 状態と
- * 公開用 Manifest を純粋関数として計算する。
+ * Pure function: computes the next Position Pool state and the public Manifest from the previous
+ * Position Pool state and the latest Playlist contents obtained from yt-dlp.
  *
- * - videoId -> slot の割当は immutable。既存 videoId の slot は変更しない
- *   (焼き込み済みの Redirect Pool URL と slot 番号の対応がずれると World 側の再生が壊れるため)。
- * - 新規 videoId にのみ新しい slot (nextSlot++) を割り当てる。
- * - Position Pool 上限を超える場合は SlotPoolExhaustedError を投げ、呼び出し側は
- *   直前の Position Pool 状態 / キャッシュ済み Manifest をそのまま維持すること。
- * - Manifest の tracks 順序は Playlist 上の並び順をそのまま使う。position は slot 番号。
- * - generation は Track 内容 (順序 + Title) が実際に変化した場合のみ増分する。
+ * - The videoId -> slot assignment is immutable; an existing videoId keeps its slot
+ *   (if it drifted from the baked-in Redirect Pool URLs, playback in the World would break).
+ * - Only new videoIds get a new slot (nextSlot++).
+ * - If the Position Pool limit would be exceeded, throws SlotPoolExhaustedError; the caller must
+ *   keep the previous Position Pool state / cached Manifest as is.
+ * - Manifest tracks follow the Playlist order as is; position is the slot number.
+ * - generation is bumped only when the Track contents (order + Title) actually change.
  */
 export function buildManifest(
   previous: SlotAllocationState | null,
@@ -152,11 +152,10 @@ export function buildManifest(
 }
 
 /**
- * これまでに一度でも Refresh され、Position Pool 状態 (slots.json) が永続化済みの
- * playlistId 一覧を返す。allowlist 無効時の一括 Refresh (`refreshAll`) が対象を
- * 決めるのに使う (`playlistDir` で `encodeURIComponent` してディレクトリ名にしているため
- * 復元は `decodeURIComponent` で行う)。dataDir 自体が未作成 (一度も Refresh していない)
- * 場合は空配列を返す。
+ * Returns the playlistIds that have been refreshed at least once and have persisted Position Pool
+ * state (slots.json). Used by the bulk Refresh (`refreshAll`) to pick targets when the allowlist is
+ * disabled (directory names are `encodeURIComponent`-ed in `playlistDir`, so they are restored with
+ * `decodeURIComponent`). Returns an empty array if dataDir itself does not exist yet.
  */
 export function listKnownPlaylistIds(dataDir: string): string[] {
   if (!fs.existsSync(dataDir)) return []
@@ -166,7 +165,7 @@ export function listKnownPlaylistIds(dataDir: string): string[] {
     .map((entry) => decodeURIComponent(entry.name))
 }
 
-/** Refresh 失敗を Position Pool 状態に記録する (slot 対応表・generation は変更しない = 維持する)。 */
+/** Records a Refresh failure in the Position Pool state (slot mappings and generation are left unchanged). */
 export function recordFailure(
   dataDir: string,
   playlistId: string,

@@ -1,12 +1,12 @@
-/** `#EXT-X-STREAM-INF` などのタグ行から属性値 (引用符付き/なし) を取り出す。 */
+/** Extracts an attribute value (quoted or not) from a tag line such as `#EXT-X-STREAM-INF`. */
 export function attr(line: string, name: string): string | null {
   const m = new RegExp(`[:,]${name}=("([^"]*)"|[^,]*)`).exec(line)
   return m ? m[2] || m[1] : null
 }
 
 /**
- * URI を playlist の URL を基準に絶対 URL へ解決し、https のものだけ返す。file: などの他スキームは
- * サーバーの読み取り先を意図せず広げてしまうため除外する。
+ * Resolves a URI against the playlist URL and returns it only if https. Other schemes such as
+ * file: are rejected because they would unintentionally widen what the server reads.
  */
 export function toHttpsUrl(uri: string, baseUrl: string): string | null {
   try {
@@ -18,13 +18,14 @@ export function toHttpsUrl(uri: string, baseUrl: string): string | null {
 }
 
 /**
- * HLS master manifest を、最高画質の AVC1 (H.264) variant 1 本と、その variant が参照する
- * 音声グループの `#EXT-X-MEDIA` だけに絞る。YouTube の VOD の master は音声が別 rendition
- * (`EXT-X-MEDIA`) になっており、AVC1 variant は映像のみのため、variant の URL を単体で返すと
- * 音声が失われる。master のまま返すと VP9 / fMP4 の variant が選ばれ得る (VRChat/AVPro の既知の不具合) ため、
- * AVC1 のみの master を組み立てる。音声を再生できない variant (音声グループに有効な rendition が無い、
- * または音声グループも音声コーデックも持たない) は選ばない。URI は `baseUrl` を基準に https の絶対 URL へ
- * 解決し、https 以外を指すものは除外する。条件を満たす AVC1 の variant が無ければ null。
+ * Narrows an HLS master manifest to the single highest-quality AVC1 (H.264) variant plus the
+ * audio group's `#EXT-X-MEDIA` it references. YouTube VOD masters carry audio as a separate
+ * rendition (`EXT-X-MEDIA`) and the AVC1 variant is video-only, so returning just the variant URL
+ * would lose audio; returning the master as-is may let VRChat/AVPro pick a VP9 / fMP4 variant
+ * (a known bug). So an AVC1-only master is built. Variants that can't play audio (no valid
+ * rendition in the audio group, or neither an audio group nor an audio codec) are never chosen.
+ * URIs are resolved to absolute https URLs against `baseUrl`; non-https ones are dropped.
+ * Returns null if no suitable AVC1 variant exists.
  */
 export function filterAvc1Master(
   manifest: string,
@@ -32,7 +33,7 @@ export function filterAvc1Master(
 ): string | null {
   const lines = manifest.split(/\r?\n/)
 
-  // 音声グループごとの有効な `#EXT-X-MEDIA` (URI が https に解決できるもの、または URI を持たないもの)。
+  // Valid `#EXT-X-MEDIA` per audio group (URI resolves to https, or has no URI).
   const audioMedia = new Map<string, string[]>()
   for (const l of lines) {
     if (!l.startsWith('#EXT-X-MEDIA:') || attr(l, 'TYPE') !== 'AUDIO') continue
@@ -63,8 +64,8 @@ export function filterAvc1Master(
     const uri = toHttpsUrl(lines[i + 1], baseUrl)
     if (uri === null) continue
 
-    // 音声を再生できない variant は選ばない (無音の HLS を作らないため)。音声グループを参照する variant は
-    // そのグループに有効な rendition があること、参照しない variant は映像と同じストリームに音声 (mp4a) を含むこと。
+    // Skip variants that can't play audio (to avoid silent HLS): one referencing an audio group
+    // needs a valid rendition in it; one without a group needs audio (mp4a) in the same stream.
     const group = attr(line, 'AUDIO')
     const media = group === null ? [] : (audioMedia.get(group) ?? [])
     const hasAudio =
@@ -89,8 +90,8 @@ export function filterAvc1Master(
 }
 
 /**
- * master manifest を取得して {@link filterAvc1Master} で絞り込む。取得失敗・タイムアウトは例外、
- * AVC1 の variant が無ければ null。
+ * Fetches the master manifest and narrows it with {@link filterAvc1Master}. Throws on fetch
+ * failure or timeout; returns null if there is no AVC1 variant.
  */
 export async function fetchAvc1Master(
   url: string,

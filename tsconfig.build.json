@@ -1,6 +1,6 @@
 {
-  // tsconfig.json (ESLint / typecheck 用の Root tsconfig) を継承し、実ビルド用に
-  // rootDir/outDir/include を src のみへ絞り込む。
+  // Extends tsconfig.json (the root tsconfig for ESLint and typecheck) and narrows
+  // rootDir/outDir/include to src only for the real build.
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "module": "CommonJS",

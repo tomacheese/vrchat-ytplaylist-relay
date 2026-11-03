@@ -36,10 +36,10 @@ dist/
 # pnpm
 .pnpm-store
 
-# アプリケーション実行時データ (yt-dlp/ffmpeg のダウンロードキャッシュ・slot 状態など)
+# Application runtime data (yt-dlp/ffmpeg download cache, slot state, etc.)
 data/*
 !data/.gitkeep
 
-# 実際に配信対象とする Playlist 設定 (利用者ごとに異なる個人設定のため管理対象外)
+# Playlist configuration actually served (per-user settings, so not tracked)
 config/*.json
 !config/*.json.example

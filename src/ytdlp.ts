@@ -5,7 +5,7 @@ import path from 'node:path'
 import { logger } from './logger'
 import type { YtdlpFlatEntry } from './types'
 
-/** yt-dlp の起動・実行・出力解析のいずれかが失敗した際に投げる。`stderr` に yt-dlp の生出力を保持する。 */
+/** Thrown when launching yt-dlp, running it, or parsing its output fails. `stderr` keeps yt-dlp's raw output. */
 export class YtdlpError extends Error {
   constructor(
     message: string,
@@ -17,7 +17,7 @@ export class YtdlpError extends Error {
   }
 }
 
-/** {@link fetchPlaylistEntries} / {@link downloadVideo} / {@link resolveVideoJson} の実行オプション。 */
+/** Options shared by {@link fetchPlaylistEntries}, {@link downloadVideo} and {@link resolveVideoJson}. */
 export interface RunYtdlpOptions {
   ytdlpPath: string
   timeoutMs: number
@@ -47,7 +47,7 @@ function directorySize(directory: string): number {
     }, 0)
 }
 
-/** yt-dlp が起動した ffmpeg / JS runtime も同時に終了させる。 */
+/** Also terminates the ffmpeg / JS runtime processes that yt-dlp spawned. */
 function killProcessTree(
   child: ChildProcess,
   complete: (error?: Error) => void
@@ -157,8 +157,8 @@ function trackChild(child: ChildProcess): void {
 }
 
 /**
- * yt-dlp を子プロセスとして起動し、Timeout 付きで標準出力・標準エラー出力を回収する共通処理。
- * `contextLabel` はエラーメッセージに埋め込む対象の説明 (例: "playlist xxx", "video yyy")。
+ * Shared helper: spawns yt-dlp as a child process and collects stdout/stderr with a timeout.
+ * `contextLabel` describes the target in error messages (e.g. "playlist xxx", "video yyy").
  */
 function runYtdlp(
   args: string[],
@@ -311,8 +311,8 @@ function runYtdlp(
 }
 
 /**
- * yt-dlp --flat-playlist -J で YouTube Playlist の順序・Video ID・Title を取得する。
- * `--flat-playlist` を使うことで各動画を個別に解析せず、Playlist ページの一覧だけを高速取得する。
+ * Fetches the order, Video IDs and Titles of a YouTube Playlist with `yt-dlp --flat-playlist -J`.
+ * `--flat-playlist` avoids extracting each video individually and only reads the Playlist page listing, which is fast.
  */
 export async function fetchPlaylistEntries(
   playlistId: string,
@@ -357,9 +357,9 @@ export async function fetchPlaylistEntries(
 }
 
 /**
- * videoId を yt-dlp (`-j`, `--no-playlist`) で解決し、パース済みの JSON (yt-dlp の InfoExtractor 出力) を返す。
- * `is_live` / `formats[]` の解釈は呼び出し元 (`live-resolve.ts`) の責務とし、ここでは yt-dlp
- * の実行と JSON パースのみを行う (`fetchPlaylistEntries` と同じ関心分離)。
+ * Resolves a videoId with yt-dlp (`-j`, `--no-playlist`) and returns the parsed JSON (yt-dlp InfoExtractor output).
+ * Interpreting `is_live` / `formats[]` is the caller's job (`live-resolve.ts`); this only runs
+ * yt-dlp and parses the JSON (same separation of concerns as `fetchPlaylistEntries`).
  */
 export async function resolveVideoJson(
   videoId: string,
@@ -380,23 +380,24 @@ export async function resolveVideoJson(
   }
 }
 
-/** {@link downloadVideo} の実行オプション。 */
+/** Options for {@link downloadVideo}. */
 export interface DownloadVideoOptions extends RunYtdlpOptions {
-  /** ダウンロードする動画の最大高さ (px)。これ以下で最高画質のフォーマットを選ぶ。 */
+  /** Maximum video height (px); the best-quality format at or below it is chosen. */
   maxHeight: number
-  /** 上限超過時は既存の配信用ファイルを置換せずに失敗させる。 */
+  /** Fails without replacing the existing served file when the limit is exceeded. */
   maxBytes?: number
 }
 
 /**
- * 指定した videoId の動画を yt-dlp でダウンロードし、`destPath` に mp4 として配置する ("proxy" 配信モード用)。
+ * Downloads a video with yt-dlp and places it at `destPath` as mp4 (for the "proxy" delivery mode).
  *
- * - フォーマットは `maxHeight` 以下で最高画質のものを選ぶ。YouTube は progressive (映像+音声結合) の
- *   mp4 を提供しなくなっているため、映像 (DASH) + 音声 (DASH) を分けて取得し ffmpeg で結合する
- *   (`--merge-output-format mp4`)。単一フォーマットしか無い fallback 時のため `--remux-video mp4` も
- *   併用し、コンテナを再エンコードなしで mp4 に揃える (AVProVideoPlayer が mp4 以外を安定して再生できる保証がないため)。
- * - Download は `destPath` と同じディレクトリ配下の一時ディレクトリに行い、完了後に `fs.renameSync`
- *   で `destPath` へ atomic に配置する (読み手が書きかけのファイルを見ることを防ぐ)。
+ * - Picks the best-quality format at or below `maxHeight`. YouTube no longer offers progressive
+ *   (video+audio) mp4, so video (DASH) and audio (DASH) are fetched separately and merged with
+ *   ffmpeg (`--merge-output-format mp4`). `--remux-video mp4` is also passed for the fallback case
+ *   where only a single format exists, so the container is mp4 without re-encoding
+ *   (AVProVideoPlayer is not guaranteed to play anything other than mp4 reliably).
+ * - Downloads into a temp directory beside `destPath`, then moves it into place atomically with
+ *   `fs.renameSync` so readers never see a partially written file.
  */
 export async function downloadVideo(
   videoId: string,

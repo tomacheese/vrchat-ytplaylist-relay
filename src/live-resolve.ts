@@ -2,62 +2,59 @@ import { logger } from './logger'
 import type { RunYtdlpOptions } from './ytdlp'
 import { resolveVideoJson } from './ytdlp'
 
-/** yt-dlp -j の結果から抽出する、配信方式の決定に必要な最小限の情報。 */
+/** Minimal info extracted from `yt-dlp -j` needed to choose the delivery method. */
 export interface ResolvedVideoInfo {
   isLive: boolean
   /**
-   * 配信に使う HLS manifest URL。音声トラックを含む AVC1 (H.264) の legacy TS variant のうち
-   * 最高画質のものを優先し、無ければ YouTube 生の HLS master manifest URL にフォールバックする
-   * (`extractHlsMasterManifestUrl` 参照)。取得できなければ null。
+   * HLS manifest URL to serve: the highest-quality AVC1 (H.264) legacy TS variant that has audio,
+   * else the raw YouTube HLS master manifest URL (see `extractHlsMasterManifestUrl`). Null if none.
    */
   hlsMasterManifestUrl: string | null
   /**
-   * `hlsMasterManifestUrl` が master manifest そのもの (音声込みの単一 variant を選べなかった) 場合 true。
-   * relay モードの VOD 配信では、この master の AVC1 variant と音声 rendition から segment 単位で ffmpeg により音声込みの MPEG-TS に多重化して配信する (`vod-relay.ts`)。
+   * True when `hlsMasterManifestUrl` is the master manifest itself (no single variant with audio
+   * could be chosen). In relay mode, VOD then muxes the master's AVC1 variant and audio rendition
+   * into MPEG-TS per segment with ffmpeg (`vod-relay.ts`).
    */
   hlsIsMaster: boolean
 }
 
-/** `resolveVideoInfo` の解決結果キャッシュエントリ。 */
+/** Cache entry for `resolveVideoInfo`. */
 interface CacheEntry {
   info: ResolvedVideoInfo
   fetchedAt: number
 }
 
 /**
- * videoId ごとの解決結果キャッシュ。`refresh.ts` の `manifestCache` と同じ形 (Map + fetchedAt) で、
- * TTL 内は yt-dlp を再実行しない (モード混在時に高頻度アクセスされる position での yt-dlp 負荷を抑えるため)。
+ * Per-videoId resolve cache, same shape as `manifestCache` in `refresh.ts` (Map + fetchedAt).
+ * Within the TTL yt-dlp is not re-run, limiting yt-dlp load from frequently hit positions in mixed modes.
  */
 const resolveCache = new Map<string, CacheEntry>()
 const inFlightResolutions = new Map<string, Promise<ResolvedVideoInfo>>()
 
-/** yt-dlp -j の JSON 出力から Live 判定に必要な最小限のフィールドのみを受け取る型。 */
+/** Only the fields of the `yt-dlp -j` JSON needed to detect live. */
 interface YtdlpVideoJson {
   is_live?: unknown
   formats?: unknown
 }
 
 /**
- * `formats[]` から、VRChat (AVPro Video / Windows MediaFoundation) で安定して再生できる
- * AVC1 (H.264) の legacy TS variant のうち最高画質の URL を選ぶ。YouTube 生の HLS master
- * manifest (複数画質・複数コーデックの variant を含む multivariant playlist) をそのまま
- * 渡すと、variant の選択が VRChat 同梱 yt-dlp / AVPro 側のロジックに委ねられる。その結果、
- * VP9 + fMP4/CMAF の variant が選ばれて再生できないことがある (VRChat 公式フィードバックの
- * 場で報告されている既知の不具合)。そのためサーバー側で単一 variant に確定させ、この
- * 壊れやすい選択ロジックをバイパスする。
+ * Picks, from `formats[]`, the highest-quality AVC1 (H.264) legacy TS variant URL that plays
+ * reliably in VRChat (AVPro Video / Windows MediaFoundation). Handing over the raw YouTube HLS
+ * master manifest (a multivariant playlist) leaves variant selection to VRChat's bundled yt-dlp /
+ * AVPro, which can pick a VP9 + fMP4/CMAF variant that fails to play (a known bug reported on
+ * the VRChat feedback board). Pinning a single variant server-side bypasses that fragile logic.
  *
- * legacy TS variant には映像のみ (音声トラックを持たない) のものも存在するため、
- * `acodec` が `'none'` (yt-dlp が音声なしフォーマットに付与する値) の候補は除外し、
- * 音声付き variant のみを選択対象にする。除外しないと画質優先の比較で
- * 音声なし variant が選ばれてしまい、relay モードの再生で音声が無くなる。
+ * Some legacy TS variants are video-only, so candidates with `acodec === 'none'` (yt-dlp's value
+ * for formats without audio) are excluded. Otherwise the quality comparison could pick a silent
+ * variant and relay playback would have no audio.
  *
- * 候補が無ければ、最初に見つかった `manifest_url` (AVC1 以外を含む master manifest) にフォールバックし
- * `{ url, isMaster: true }` を返す。ただし master に AVC1 の variant が 1 つも無い場合は
- * `isMaster: false` とし、呼び出し側は従来どおりこの URL へ 302 する (絞り込みの対象が無いため)。
- * VOD で AVC1 の variant があるのに音声込みでない場合は `isMaster: true` で、呼び出し側が
- * AVC1 + 音声のみに絞って segment 単位で多重化する (`hls-filter.ts` / `vod-relay.ts`)。
- * 多重化されない場合 (AVC1 が無い、または Live) のフォールバック時は `videoId` とともに警告ログを
- * 出力する (既知の再生不具合を踏む可能性があるため運用上検知できるようにする)。
+ * With no candidate, falls back to the first `manifest_url` found (a master manifest that includes
+ * non-AVC1 variants) and returns `{ url, isMaster: true }`. If the master has no AVC1 variant at
+ * all, `isMaster` is false and the caller 302s to the URL as before (nothing to narrow down).
+ * For VOD with AVC1 variants but none with audio, `isMaster` is true and the caller narrows to
+ * AVC1 + audio and muxes per segment (`hls-filter.ts` / `vod-relay.ts`).
+ * When falling back without muxing (no AVC1, or live), logs a warning with `videoId`, since the
+ * known playback bug may be hit and operators should be able to detect it.
  */
 function extractHlsMasterManifestUrl(
   videoId: string,
@@ -130,13 +127,12 @@ function extractHlsMasterManifestUrl(
 }
 
 /**
- * videoId を yt-dlp (`-j`, `--no-playlist`) で解決し、Live 判定と HLS master manifest URL を取得する。
- * `relay` モード (VOD/Live 共通) と、Live 判定自体が必要な場面 (`mediaDeliveryMode !== liveDeliveryMode`
- * のとき) の両方から呼ばれる。
+ * Resolves videoId with yt-dlp (`-j`, `--no-playlist`) to get the live flag and the HLS master
+ * manifest URL. Called from `relay` mode (VOD and live) and wherever the live flag itself is
+ * needed (when `mediaDeliveryMode !== liveDeliveryMode`).
  *
- * 同一 videoId への `cacheTtlMs` 内の連続呼び出しは yt-dlp を 1 回しか実行しない。yt-dlp 実行が
- * 失敗した場合は例外をそのまま呼び出し元に伝播し、キャッシュにも格納しない
- * (一時的なエラーで長時間 502 を吐き続けないようにするため)。
+ * Repeated calls for one videoId within `cacheTtlMs` run yt-dlp once. If yt-dlp fails, the error
+ * propagates and nothing is cached, so a transient error doesn't keep returning 502 for long.
  */
 export async function resolveVideoInfo(
   videoId: string,
@@ -172,7 +168,7 @@ export async function resolveVideoInfo(
   }
 }
 
-/** テスト用: キャッシュを空にする。 */
+/** For tests: clears the cache. */
 export function clearResolveCache(): void {
   resolveCache.clear()
   inFlightResolutions.clear()

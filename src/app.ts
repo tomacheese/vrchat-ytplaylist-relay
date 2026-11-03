@@ -11,7 +11,7 @@ import { mediaRouter } from './routes/media'
 import { rootRouter } from './routes/root'
 import { videoRouter } from './routes/video'
 
-/** Express の route template を返し、未解決時に raw request path を露出させない。 */
+/** Returns the Express route template, never exposing the raw request path when unresolved. */
 function routeTemplate(req: Request): string {
   const matchedRoute = req.route as unknown as { path?: unknown } | undefined
   const routePath = matchedRoute?.path
@@ -76,12 +76,14 @@ export function createApp(config: AppConfig): Express {
   app.use(rootRouter(config))
   app.use(healthRouter(config))
   app.use(adminRouter(config))
-  // manifest.json ("/:playlistId/manifest.json") / live ("/:playlistId/:position/live/:file",
-  // "/live/:videoId/:file") を media ("/:playlistId/:positionFile") より先に登録する。media 側は
-  // "\d+\.mp4" のみ受理するので誤ってこれらを飲み込むことはないが、より具体的なパスを先に登録する
-  // 慣習として順序も揃える。
-  // video ("/video/:videoIdParam") は media と同じ 2 セグメント構造を持つ。
-  // そのため media より先に登録しないと、playlistId="video" として media 側に奪われ恒久的に到達不能になる。
+  // Register manifest.json ("/:playlistId/manifest.json") and live
+  // ("/:playlistId/:position/live/:file", "/live/:videoId/:file")
+  // before media ("/:playlistId/:positionFile"). Media only accepts
+  // "\d+\.mp4", so it would not swallow these by mistake, but we keep the order as well,
+  // following the convention of registering more specific paths first.
+  // video ("/video/:videoIdParam") has the same two-segment shape as media.
+  // If it were registered after media, media would take it as playlistId="video"
+  // and it would be permanently unreachable.
   app.use(manifestRouter(config))
   app.use(liveRouter(config))
   app.use(videoRouter(config))

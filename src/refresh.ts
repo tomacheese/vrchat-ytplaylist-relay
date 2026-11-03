@@ -28,20 +28,19 @@ const scheduledRelayWarmups = new Set<string>()
 let activeRelayWarmups = 0
 
 /**
- * playlistId ごとの実行中 Refresh を single-flight にするための Map。
- * `KeyedMutex` は同一 playlistId の実行を直列化するだけで重複排除はしないため、
- * これが無いと同一 playlistId への同時リクエストの数だけ yt-dlp が (直列に) 繰り返し
- * 実行されてしまう (未解決 position への同時アクセスなど)。
+ * In-flight refreshes per playlistId, making Refresh single-flight.
+ * `KeyedMutex` only serializes runs for the same playlistId and does not deduplicate them,
+ * so without this, N concurrent requests (e.g. for an unresolved position) would run yt-dlp N times in sequence.
  */
 const inFlightRefreshes = new Map<string, Promise<RefreshResult>>()
 
-/** playlistId ごとの直近取得 Manifest。Playlist の実データは Disk に永続化せず、ここ (メモリ) にのみ保持する。 */
+/** Most recently fetched Manifest per playlistId. Playlist data is kept only here in memory, never persisted to disk. */
 interface CacheEntry {
   manifest: Manifest
   fetchedAt: number
 }
 
-/** メモリ上の Manifest キャッシュ。Process 再起動でクリアされる。 */
+/** In-memory Manifest cache; cleared on process restart. */
 const manifestCache = new Map<string, CacheEntry>()
 
 const recentFailures = new Map<string, { retryAt: number; error: string }>()
@@ -51,7 +50,7 @@ function failureKey(config: AppConfig, playlistId: string): string {
   return `${config.dataDir}\0${playlistId}`
 }
 
-/** 一度だけ要求された不正な Playlist の失敗も無期限には保持しない。 */
+/** Bounds recentFailures so failures for invalid playlists requested only once are not kept forever. */
 function pruneRecentFailures(): void {
   const now = Date.now()
   for (const [key, failure] of recentFailures) {
@@ -149,7 +148,7 @@ function scheduleRelayWarmups(
   startRelayWarmups(config)
 }
 
-/** 1 Playlist の Refresh 結果。`ok: false` の場合は `error` に失敗理由が入る。 */
+/** Refresh result for one Playlist. `error` holds the failure reason when `ok` is false. */
 export interface RefreshResult {
   playlistId: string
   ok: boolean
@@ -158,7 +157,7 @@ export interface RefreshResult {
   error?: string
 }
 
-/** {@link refreshPlaylist} の実処理本体 (single-flight の Map 管理から分離)。 */
+/** Actual work of {@link refreshPlaylist}, separated from the single-flight Map handling. */
 function runRefresh(
   config: AppConfig,
   playlistId: string,
@@ -205,10 +204,10 @@ function runRefresh(
             config.mediaDeliveryMode === 'proxy' ||
             config.mediaDeliveryMode === 'hybrid'
           ) {
-            // Response Blocking を避けるため await しない。失敗は prefetchAll 内部でログするだけで、
-            // 冷キャッシュ時は Media Endpoint 側 (getOrDownload / hybrid の redirect フォールバック) が
-            // 改めてダウンロードするため機能に影響しない。
-            // 末尾の .catch() で例外を処理しているため no-floating-promises 上も未処理 Promise 扱いにならない。
+            // Not awaited, to avoid blocking the response. A failure is only logged; on a cold cache
+            // the Media Endpoint (getOrDownload / hybrid redirect fallback) downloads the file again,
+            // so functionality is unaffected.
+            // The trailing .catch() handles rejections, so no-floating-promises does not flag it.
             prefetchAll(
               config,
               entries.map((entry) => entry.id)
@@ -268,12 +267,12 @@ function runRefresh(
 }
 
 /**
- * yt-dlp を実行して 1 Playlist を実際に取得し、Position Pool (slots.json) とメモリキャッシュを
- * 更新する。TTL に関係なく必ず yt-dlp を実行するため、Client 要求時の都度取得 ({@link getManifestForClient})
- * と 管理者による強制更新 (`/admin/refresh`, CLI) の両方から呼ばれる。
- * 同一 playlistId の実行は KeyedMutex で直列化しつつ、`inFlightRefreshes` により single-flight
- * (既に実行中の Promise を後続の呼び出しへそのまま返す) にする。
- * 失敗時は Position Pool 状態 / メモリキャッシュを変更せず、失敗情報だけ記録する。
+ * Runs yt-dlp to fetch one Playlist and updates the Position Pool (slots.json) and the in-memory cache.
+ * Always runs yt-dlp regardless of TTL, so it serves both on-demand fetches for clients
+ * ({@link getManifestForClient}) and forced refreshes by an admin (`/admin/refresh`, CLI).
+ * Runs for the same playlistId are serialized by KeyedMutex and made single-flight via
+ * `inFlightRefreshes` (later callers get the already-running Promise).
+ * On failure the Position Pool state and memory cache are left unchanged; only the failure is recorded.
  */
 export async function refreshPlaylist(
   config: AppConfig,
@@ -299,11 +298,11 @@ export async function refreshPlaylist(
 }
 
 /**
- * 一括 Refresh の対象 playlistId 一覧を求める。
- * allowlist (`config.playlists`) が設定されていればそれを使い、無効 (空) の場合は
- * 事前登録が無いため、代わりに Position Pool 状態が永続化済みの (＝一度でも Refresh に
- * 成功した) playlistId を対象にする。メモリキャッシュ (`manifestCache`) ではなく Disk 上の
- * 状態を見るのは、`pnpm refresh` CLI が Server と別プロセスで動きメモリを共有しないため。
+ * Returns the playlistIds targeted by a bulk Refresh.
+ * Uses the allowlist (`config.playlists`) when set; when it is disabled (empty) there is no
+ * pre-registered list, so it falls back to playlistIds whose Position Pool state is persisted
+ * (i.e. refreshed successfully at least once). It reads on-disk state rather than `manifestCache`
+ * because the `pnpm refresh` CLI runs in a separate process from the server and shares no memory.
  */
 function refreshAllTargets(config: AppConfig): string[] {
   if (config.playlists.length > 0) {
@@ -313,9 +312,9 @@ function refreshAllTargets(config: AppConfig): string[] {
 }
 
 /**
- * 一括 Refresh の対象 ({@link refreshAllTargets}) を順に Refresh する。
- * 1 件の失敗は他の Playlist の Refresh を妨げない。
- * `/admin/refresh` (キャッシュ強制無効化・再取得用) と CLI から使う。
+ * Refreshes each target from {@link refreshAllTargets} in turn.
+ * A failure for one Playlist does not prevent the others from being refreshed.
+ * Used by `/admin/refresh` (forced cache invalidation and refetch) and the CLI.
  */
 export async function refreshAll(
   config: AppConfig,
@@ -323,22 +322,22 @@ export async function refreshAll(
 ): Promise<RefreshResult[]> {
   const results: RefreshResult[] = []
   for (const playlistId of refreshAllTargets(config)) {
-    // 直列実行にする: yt-dlp を同時に何本も立てて YouTube 側のレート制限を踏むのを避ける。
+    // Run sequentially to avoid spawning many yt-dlp processes at once and hitting YouTube rate limits.
     results.push(await refreshPlaylist(config, playlistId, options))
   }
   return results
 }
 
 /**
- * Client からの `GET /:playlistId/manifest.json` に応答するための Manifest を返す。
+ * Returns the Manifest for a client's `GET /:playlistId/manifest.json`.
  *
- * - メモリキャッシュが TTL 内であれば yt-dlp を実行せずそのまま返す。
- * - TTL 切れ、または未取得の場合は yt-dlp を実行して新しい Manifest を取得する。
- * - yt-dlp が失敗した場合、直前のキャッシュが残っていればそれを stale のまま返す
- *   (Manifest Fetch 失敗時も World 側は「現在の Playlist を維持」できるようにするため)。
- *   キャッシュが一度も無い場合は manifest: null を返す (呼び出し側は 503 を返すこと)。
+ * - If the memory cache is within TTL, returns it without running yt-dlp.
+ * - If expired or missing, runs yt-dlp to fetch a fresh Manifest.
+ * - If yt-dlp fails and a previous cache entry exists, returns it as stale
+ *   (so the World can keep "the current Playlist" even when a Manifest fetch fails).
+ *   If there has never been a cache entry, returns manifest: null (the caller should respond 503).
  *
- * @param playlistId 呼び出し前に config.playlists に存在することを確認しておくこと
+ * @param playlistId must already be verified against config.playlists by the caller
  */
 export async function getManifestForClient(
   config: AppConfig,
@@ -357,7 +356,7 @@ export async function getManifestForClient(
 
   const result = await refreshPlaylist(config, playlistId)
   if (result.ok) {
-    // refreshPlaylist 成功時は manifestCache が更新済みのはず。
+    // manifestCache should already be updated when refreshPlaylist succeeds.
     const fresh = manifestCache.get(playlistId)
     return { manifest: fresh?.manifest ?? null }
   }
@@ -374,13 +373,13 @@ export async function getManifestForClient(
 }
 
 /**
- * Media Endpoint (`GET /:playlistId/:position.mp4`) 用に、Position から videoId を解決する。
- * 永続化済み Position Pool 状態にまだ無い場合 (初回リクエスト、Position Pool 状態の消失など) は
- * Manifest Endpoint と同様に Refresh (yt-dlp 実行) を試みてから再解決する。
- * 直近 `manifestCacheTtlMs` 以内に Refresh 済みで解決できなかった場合は、無効な position への
- * 繰り返しリクエストで yt-dlp を連打しないよう Refresh を再試行しない。
- * `reason` は `refreshPlaylist` の失敗による一時的な未解決 (`refresh_failed`) と、
- * Playlist に本当に存在しない position (`not_found`) を呼び出し側 (Router) が区別できるようにする。
+ * Resolves a videoId from a position for the Media Endpoint (`GET /:playlistId/:position.mp4`).
+ * If it is not yet in the persisted Position Pool state (first request, lost state, etc.),
+ * it tries a Refresh (running yt-dlp) like the Manifest Endpoint and resolves again.
+ * If a Refresh within the last `manifestCacheTtlMs` already failed to resolve it, Refresh is not
+ * retried, so repeated requests for an invalid position do not hammer yt-dlp.
+ * `reason` lets the caller (Router) tell a transient failure caused by a failed `refreshPlaylist`
+ * (`refresh_failed`) from a position that truly does not exist in the Playlist (`not_found`).
  */
 export async function resolveVideoIdForPosition(
   config: AppConfig,
@@ -418,12 +417,12 @@ export async function resolveVideoIdForPosition(
   return { videoId: refreshedVideoId }
 }
 
-/** キャッシュ済み Manifest を yt-dlp を実行せずに覗き見る (`/health` の trackCount 表示用)。 */
+/** Peeks at the cached Manifest without running yt-dlp (for `/health` trackCount). */
 export function peekCachedManifest(playlistId: string): Manifest | null {
   return manifestCache.get(playlistId)?.manifest ?? null
 }
 
-/** Test 用: yt-dlp を経由せずメモリキャッシュへ直接 Manifest を投入する。 */
+/** For tests: seeds the memory cache with a Manifest directly, bypassing yt-dlp. */
 export function primeManifestCacheForTests(
   playlistId: string,
   manifest: Manifest,

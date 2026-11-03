@@ -6,8 +6,8 @@ import { getManifestForClient } from '../refresh'
 /**
  * GET /{playlistId}/manifest.json
  *
- * Backend は Playlist の内容を Disk に永続化せず、Client からの要求のたびに TTL キャッシュを
- * 確認し、切れていれば yt-dlp で YouTube Playlist を取得して応答する ({@link getManifestForClient} 参照)。
+ * The backend does not persist Playlist contents to disk. On each client request it checks the TTL cache
+ * and, if expired, fetches the YouTube Playlist with yt-dlp before responding (see {@link getManifestForClient}).
  */
 export function manifestRouter(config: AppConfig): Router {
   const router = Router()
@@ -19,12 +19,12 @@ export function manifestRouter(config: AppConfig): Router {
       return
     }
 
-    // Router に渡す関数自体は async にせず Promise Chain の末尾 .catch(next) でエラーを
-    // 処理する (Express 4 のハンドラーは void を期待するため。no-misused-promises 対策)。
+    // The function passed to the Router is not async; errors are handled by .catch(next) at the end of the
+    // Promise chain (Express 4 handlers are expected to return void; avoids no-misused-promises).
     getManifestForClient(config, playlistId)
       .then(({ manifest, error }) => {
         if (!manifest) {
-          // まだ一度も取得に成功していない。World 側は「現在の Playlist を維持」でよいので 503 で明示する。
+          // Never fetched successfully yet. The World can just keep "the current Playlist", so signal it explicitly with 503.
           res.status(503).json({ error: error ?? 'manifest not available yet' })
           return
         }

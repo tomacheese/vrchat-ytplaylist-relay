@@ -1,6 +1,6 @@
 /**
- * キーごとの直列実行を保証する簡易 Mutex。
- * Playlist 単位の Refresh が同時に複数走って Position Pool / Manifest が壊れることを防ぐ。
+ * Simple mutex that serializes tasks per key.
+ * Prevents concurrent refreshes of one playlist from corrupting the Position Pool / Manifest.
  */
 export class KeyedMutex {
   private tails = new Map<string, Promise<void>>()

@@ -12,17 +12,18 @@ import { resolveVideoInfo } from '../src/live-resolve'
 import { buildManifest, persistSlotState } from '../src/manifest-store'
 import { primeManifestCacheForTests } from '../src/refresh'
 
-/** JSON ログを object として検証し、field assertion に使える形で返す。 */
+/** Parses a JSON log line as an object so field assertions can use it. */
 function parseLogRecord(line: string): Record<string, unknown> {
   const parsed: unknown = JSON.parse(line)
   assert.ok(parsed && typeof parsed === 'object' && !Array.isArray(parsed))
   return parsed as Record<string, unknown>
 }
 
-// isLive 判定 (resolveVideoInfo) と Live proxy 再公開 (ensureLiveRelay) は実 yt-dlp / ffmpeg に
-// 依存するため、Media Endpoint のモード分岐ロジック自体を検証するテストではモックする。
-// liveRelayDirFor / touchLiveRelay / stopLiveRelay は実ファイルシステムで動作を検証するため、
-// 元の実装のまま残す (部分モック)。
+// The isLive check (resolveVideoInfo) and Live proxy republishing (ensureLiveRelay)
+// depend on the real yt-dlp / ffmpeg,
+// so they are mocked in tests that verify the Media Endpoint's mode branching itself.
+// liveRelayDirFor / touchLiveRelay / stopLiveRelay are verified against the real filesystem,
+// so they keep the original implementation (partial mock).
 vi.mock('../src/live-resolve', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/live-resolve')>()
   return { ...actual, resolveVideoInfo: vi.fn() }
@@ -33,7 +34,7 @@ vi.mock('../src/live-relay', async (importOriginal) => {
 })
 
 beforeEach(() => {
-  // 既定では VOD (非 Live) 扱い。Live 判定に依存するテストは各テスト内で上書きする。
+  // Treated as VOD (non-Live) by default. Tests that depend on the Live check override this themselves.
   vi.mocked(resolveVideoInfo).mockResolvedValue({
     isLive: false,
     hlsMasterManifestUrl: null,
@@ -61,8 +62,8 @@ const config: AppConfig = {
   ytdlpPath: 'yt-dlp',
   defaultMaxSlots: 100,
   ytdlpTimeoutMs: 1000,
-  // テスト中に GET /manifest.json 経由で本物の yt-dlp が起動されないよう、TTL を長めに取り
-  // メモリキャッシュを primeManifestCacheForTests() で直接投入する。
+  // Use a long TTL and seed the memory cache directly with primeManifestCacheForTests(), so a real yt-dlp
+  // is never launched via GET /manifest.json during tests.
   manifestCacheTtlMs: 60_000,
   manifestRetryDelayMs: 30_000,
   mediaDeliveryMode: 'redirect',
@@ -85,9 +86,10 @@ beforeAll(async () => {
   config.liveRelayOutDir = path.join(dataDir, 'live')
   config.mediaCacheDir = path.join(dataDir, 'cache')
 
-  // slot 対応表と Manifest キャッシュを事前に生成しておく (yt-dlp の実行自体は別テストで検証済みのためここでは不要)。
-  // position 1 (liveVideo01) は liveRelayDirFor() (videoId の形式検証あり) を実装のまま経由する
-  // live-relay ルートのテスト専用に、YouTube videoId 形式 (11 文字) を満たす videoId を割り当てる。
+  // Pre-create the slot mapping and Manifest cache
+  // (running yt-dlp itself is covered by other tests, so it is not needed here).
+  // Position 1 (liveVideo01) goes through the real liveRelayDirFor() (which validates the videoId format);
+  // it is assigned a videoId in the YouTube videoId format (11 characters), only for the live-relay route tests.
   const { state, manifest } = buildManifest(
     null,
     'pl1',
@@ -102,9 +104,9 @@ beforeAll(async () => {
   primeManifestCacheForTests('pl1', manifest)
 
   const app = createApp(config)
-  // trust proxy 設定 (config.trustProxy) が req.ip に反映されることを検証するためのテスト専用ルート。
-  // "/:playlistId/:positionFile" (mediaRouter) など既存の 2 セグメント動的ルートと衝突しないよう、
-  // 単一セグメントのパスにする。
+  // Test-only route to verify that the trust proxy setting (config.trustProxy) is reflected in req.ip.
+  // Use a single-segment path so it does not collide with existing two-segment dynamic routes such as
+  // "/:playlistId/:positionFile" (mediaRouter).
   app.get('/__test-ip', (req, res) => {
     res.status(200).json({ ip: req.ip })
   })
@@ -339,8 +341,8 @@ test('GET /:playlistId/:position/live/:file returns 404 when the live-relay file
   }
 })
 
-// 実 YouTube videoId 形式 (11 文字) を満たすダミー videoId。Playlist に属さず videoId 直接指定
-// エンドポイント (GET /video/:videoId, GET /video/:videoId.mp4) 用のテストにのみ使う。
+// Dummy videoId in the real YouTube videoId format (11 characters). Not part of any Playlist; used only by tests
+// for the direct-videoId endpoints (GET /video/:videoId, GET /video/:videoId.mp4).
 const DIRECT_VIDEO_ID = 'dQw4w9WgXcQ'
 
 test('GET /video/:videoId and GET /video/:videoId.mp4 are public and redirect to the canonical YouTube watch URL', async () => {
@@ -912,7 +914,7 @@ test('GET /:playlistId/:position.mp4 in hybrid mode falls back to youtube.com wh
     hlsMasterManifestUrl: 'https://manifest.googlevideo.com/v1/master.m3u8',
     hlsIsMaster: true,
   })
-  // ENOSPC などで ensureLiveRelay が reject しても、hybrid は 502 ではなく redirect にフォールバックする。
+  // Even if ensureLiveRelay rejects (e.g. ENOSPC), hybrid falls back to a redirect instead of a 502.
   vi.mocked(ensureLiveRelay).mockRejectedValue(new Error('ENOSPC'))
   const { state, manifest } = buildManifest(
     null,
@@ -1051,9 +1053,9 @@ test('GET /:playlistId/:position.mp4 resolves live metadata on a cache miss when
       })
     })
     const address = proxyServer.address() as AddressInfo
-    // isLive 判定がスキップされていれば VOD proxy パス (getOrDownload) に入り、実在しない
-    // videoId 'v1' への実 yt-dlp 呼び出しが失敗して 502 になる。isLive: true を正しく反映していれば
-    // Live proxy パス (ensureLiveRelay) に入り、live route への 302 になる。
+    // If the isLive check were skipped, it would enter the VOD proxy path (getOrDownload), and the real yt-dlp call
+    // for the nonexistent videoId 'v1' would fail with a 502. If isLive: true is reflected correctly, it enters
+    // the Live proxy path (ensureLiveRelay) and returns a 302 to the live route.
     const res = await fetch(`http://127.0.0.1:${address.port}/pl1/0.mp4`, {
       redirect: 'manual',
     })
@@ -1081,8 +1083,8 @@ test('GET /:playlistId/:position.mp4 with a live video hits the "redirect" branc
     ...config,
     dataDir: liveRedirectDataDir,
     mediaCacheDir: path.join(liveRedirectDataDir, 'cache'),
-    // mediaDeliveryMode !== liveDeliveryMode なので skipLiveCheck の対象外
-    // (effectiveMode の switch 文自体の "redirect" ケースを経由させる)。
+    // mediaDeliveryMode !== liveDeliveryMode, so skipLiveCheck does not apply
+    // (this goes through the "redirect" case of the effectiveMode switch itself).
     mediaDeliveryMode: 'proxy',
     liveDeliveryMode: 'redirect',
   }
@@ -1140,8 +1142,8 @@ test('GET /:playlistId/:position.mp4 with a live video hits the "relay" branch o
     ...config,
     dataDir: liveRelayModeDataDir,
     mediaCacheDir: path.join(liveRelayModeDataDir, 'cache'),
-    // mediaDeliveryMode !== liveDeliveryMode なので skipLiveCheck の対象外
-    // (effectiveMode の switch 文自体の "relay" ケースを経由させる)。
+    // mediaDeliveryMode !== liveDeliveryMode, so skipLiveCheck does not apply
+    // (this goes through the "relay" case of the effectiveMode switch itself).
     mediaDeliveryMode: 'proxy',
     liveDeliveryMode: 'relay',
   }
@@ -1204,7 +1206,7 @@ test.skipIf(process.env.RUN_INTEGRATION !== '1')(
       mediaDeliveryMode: 'proxy',
       mediaDownloadTimeoutMs: 600_000,
     }
-    // "v1" は buildManifest でのテスト用ダミー videoId なので、実在の動画 ID に上書きする。
+    // "v1" is a dummy videoId from buildManifest used in tests, so overwrite it with a real video ID.
     const { state, manifest } = buildManifest(
       null,
       'pl1',
@@ -1253,7 +1255,7 @@ test('GET /:playlistId/:position.mp4 in hybrid mode falls back to a YouTube redi
     dataDir: hybridDataDir,
     mediaCacheDir: path.join(hybridDataDir, 'cache'),
     mediaDeliveryMode: 'hybrid',
-    // バックグラウンドダウンロードは失敗させて即終わらせる (redirect フォールバック自体の検証が目的のため)。
+    // Make the background download fail so it ends immediately (the goal is to verify the redirect fallback itself).
     ytdlpPath: 'yt-dlp-does-not-exist',
   }
   const { state, manifest } = buildManifest(
@@ -1374,7 +1376,7 @@ test('GET /:playlistId/:position.mp4 in proxy mode serves stale cached bytes dir
     JSON.stringify({
       videoId: 'v1',
       sizeBytes: 18,
-      // config.mediaCacheTtlMs を超えた stale なエントリにする。
+      // Make the entry stale, beyond config.mediaCacheTtlMs.
       downloadedAt: Date.now() - 7 * 60 * 60 * 1000,
       lastAccessedAt: Date.now() - 7 * 60 * 60 * 1000,
     })
@@ -1384,7 +1386,7 @@ test('GET /:playlistId/:position.mp4 in proxy mode serves stale cached bytes dir
     dataDir: proxyDataDir,
     mediaCacheDir: cacheDir,
     mediaDeliveryMode: 'proxy',
-    // 裏の再ダウンロードは失敗させて即終わらせる (stale 配信自体の検証が目的のため)。
+    // Make the background re-download fail so it ends immediately (the goal is to verify stale serving itself).
     ytdlpPath: 'yt-dlp-does-not-exist',
   }
   const { state, manifest } = buildManifest(
@@ -1502,8 +1504,8 @@ test('GET /:playlistId/:position.mp4 triggers a refresh fallback when slot state
     ...config,
     dataDir: coldDataDir,
     playlists: [],
-    // 実 yt-dlp を起動させず即座に失敗させる (Refresh フォールバックが
-    // 呼ばれること自体を検証したいため、成功可否は問わない)。
+    // Make it fail immediately without launching a real yt-dlp (the goal is to verify that the Refresh
+    // fallback is invoked, so whether it succeeds does not matter).
     ytdlpPath: 'yt-dlp-does-not-exist',
     ytdlpTimeoutMs: 1000,
   }
@@ -1519,11 +1521,11 @@ test('GET /:playlistId/:position.mp4 triggers a refresh fallback when slot state
     const res = await fetch(
       `http://127.0.0.1:${address.port}/never-refreshed-playlist/0.mp4`
     )
-    // slots.json が無いため yt-dlp Refresh が走るが、yt-dlp 自体が存在せず失敗するため 502 になる
-    // (position が本当に存在しないケースの 404 とは区別される)。
+    // With no slots.json a yt-dlp Refresh runs, but yt-dlp itself does not exist so it fails and returns 502
+    // (distinct from the 404 for a position that truly does not exist).
     assert.equal(res.status, 502)
-    // Refresh フォールバックが実際に呼ばれたことは、失敗時に recordFailure() が
-    // slots.json を永続化する副作用で検証する (呼ばれていなければファイルは存在しない)。
+    // That the Refresh fallback was actually invoked is verified by the side effect that recordFailure()
+    // persists slots.json on failure (if it had not been called, the file would not exist).
     const slotsPath = path.join(
       coldDataDir,
       encodeURIComponent('never-refreshed-playlist'),
@@ -1555,7 +1557,7 @@ test('GET /:playlistId/manifest.json accepts any playlistId when the allowlist i
     ...config,
     dataDir: openDataDir,
     playlists: [],
-    // 実 yt-dlp を起動させず即座に失敗させる (allowlist の挙動だけを検証したいため)。
+    // Make it fail immediately without launching a real yt-dlp (the goal is to verify only the allowlist behavior).
     ytdlpPath: 'yt-dlp-does-not-exist',
     ytdlpTimeoutMs: 1000,
   }
@@ -1568,8 +1570,8 @@ test('GET /:playlistId/manifest.json accepts any playlistId when the allowlist i
       })
     })
     const address = openServer.address() as AddressInfo
-    // Manifest はまだキャッシュに無いため、404 (allowlist 拒否) ではなく
-    // 503 (未取得) になるはず。
+    // The Manifest is not in the cache yet, so this should be 503 (not yet fetched),
+    // not 404 (allowlist rejection).
     const res = await fetch(
       `http://127.0.0.1:${address.port}/not-registered-anywhere/manifest.json`
     )
