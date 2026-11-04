@@ -9,20 +9,20 @@ importers:
   .:
     dependencies:
       dotenv:
-        specifier: ^16.4.5
+        specifier: 16.6.1
         version: 16.6.1
       express:
-        specifier: ^4.19.2
+        specifier: 4.22.2
         version: 4.22.2
     devDependencies:
       '@book000/eslint-config':
         specifier: 1.16.43
         version: 1.16.43(eslint@10.9.0)(typescript@5.9.3)
       '@types/express':
-        specifier: ^4.17.21
+        specifier: 4.17.25
         version: 4.17.25
       '@types/node':
-        specifier: ^22.7.5
+        specifier: 22.20.1
         version: 22.20.1
       cross-env:
         specifier: 10.1.0
@@ -31,7 +31,7 @@ importers:
         specifier: 10.9.0
         version: 10.9.0
       only-allow:
-        specifier: ^1.2.1
+        specifier: 1.2.2
         version: 1.2.2
       prettier:
         specifier: 3.9.6
@@ -40,10 +40,10 @@ importers:
         specifier: 2.1.0
         version: 2.1.0
       tsx:
-        specifier: ^4.19.1
+        specifier: 4.23.12
         version: 4.23.12
       typescript:
-        specifier: ^5.6.3
+        specifier: 5.9.3
         version: 5.9.3
       vitest:
         specifier: 4.1.11
