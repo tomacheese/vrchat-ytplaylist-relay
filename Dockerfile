@@ -33,7 +33,7 @@ RUN apt-get update \
 # The plain "yt-dlp" (no extension) is a zipapp that depends on the system Python, which this image avoids bundling.
 # Self-update via `yt-dlp -U` also works as a swap between standalone binaries.
 # Renovate (customManagers in renovate.json) updates the version, so use a pinned tag, not latest.
-ARG YTDLP_VERSION=2026.08.19
+ARG YTDLP_VERSION=2026.10.26
 ARG TARGETARCH
 RUN case "${TARGETARCH}" in \
       amd64) ytdlp_binary=yt-dlp_linux ;; \
