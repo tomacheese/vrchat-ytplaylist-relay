@@ -4,18 +4,18 @@ import { logger } from './logger'
 import { refreshAll, refreshPlaylist } from './refresh'
 
 /**
- * SSH 経由の管理操作用 CLI。
+ * CLI for administration over SSH.
  *
- *   playlistctl refresh              # 全 Playlist を Refresh
- *   playlistctl refresh <playlistId> # 指定 Playlist のみ Refresh
+ *   playlistctl refresh              # refresh all playlists
+ *   playlistctl refresh <playlistId> # refresh only the given playlist
  *
- * HTTP を経由せず直接 Refresh 処理を呼ぶため、ADMIN_TOKEN が未設定でも動作する。
- * Manifest は Client 要求時に TTL キャッシュ付きで自動取得されるため、通常運用でこの CLI を
- * 実行する必要はない。TTL 経過を待たずにキャッシュを強制的に無効化したい場合にのみ使う。
+ * Calls the refresh logic directly without HTTP, so it works even when ADMIN_TOKEN is unset.
+ * Manifests are fetched automatically (with a TTL cache) on client requests, so normal operation
+ * does not need this CLI. Use it only to force-invalidate the cache without waiting for the TTL.
  */
 async function main() {
-  // process.argv.slice(2) は string[] (要素が足りなければ undefined) を返すため、
-  // タプル型として明示し command 未指定 (引数なし) のケースを型上も表現する。
+  // process.argv.slice(2) is typed string[] (elements may be undefined when missing), so
+  // spell it as a tuple type to also express the no-command (no arguments) case.
   const [command, playlistId] = process.argv.slice(2) as [string?, string?]
   if (command !== 'refresh') {
     logger.error('cli.command.failed', 'Unknown command', {

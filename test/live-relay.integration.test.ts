@@ -8,12 +8,12 @@ import { clearResolveCache } from '../src/live-resolve'
 import { ensureLiveRelay, stopLiveRelay } from '../src/live-relay'
 
 /**
- * 実際の yt-dlp / ffmpeg / ネットワークに依存する統合テスト。CI では常時実行せず、
- * RUN_INTEGRATION=1 のときのみ実行する (ytdlp.integration.test.ts と同じ方針)。
+ * Integration test that depends on real yt-dlp / ffmpeg / network. Not run in CI by default;
+ * only runs with RUN_INTEGRATION=1 (same policy as ytdlp.integration.test.ts).
  */
 const shouldRun = process.env.RUN_INTEGRATION === '1'
 
-// Lofi Girl の 24/7 配信。実在の稼働中 Live 配信での疎通確認用 (固定 videoId のため、配信終了時は要差し替え)。
+// Lofi Girl 24/7 stream, for smoke-testing against a real running live. Fixed videoId, so replace it if the stream ends.
 const LIVE_VIDEO_ID = 'jfKfPfyJRdk'
 
 let outDir: string | undefined

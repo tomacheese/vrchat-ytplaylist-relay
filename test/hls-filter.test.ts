@@ -6,7 +6,7 @@ const BASE = 'https://manifest.googlevideo.com/api/master.m3u8'
 const stream = (codecs: string, res: string, audio: string, uri: string) =>
   `#EXT-X-STREAM-INF:BANDWIDTH=1,CODECS="${codecs}",RESOLUTION=${res},FRAME-RATE=30,AUDIO="${audio}",CLOSED-CAPTIONS=NONE\n${uri}`
 
-// 実際の YouTube VOD の master manifest の構造 (URL は簡略化)
+// Structure of a real YouTube VOD master manifest (URLs simplified)
 const master = [
   '#EXTM3U',
   '#EXT-X-INDEPENDENT-SEGMENTS',
@@ -71,7 +71,7 @@ test('does not pick a higher-resolution AVC1 variant that has no playable audio'
   const m = [
     '#EXTM3U',
     '#EXT-X-MEDIA:URI="https://a/234",TYPE=AUDIO,GROUP-ID="234",NAME="d"',
-    // 1080p: AUDIO も音声コーデックも無い (無音)
+    // 1080p: no AUDIO group and no audio codec (silent)
     '#EXT-X-STREAM-INF:BANDWIDTH=9,CODECS="avc1.640028",RESOLUTION=1920x1080',
     'https://v/1080-silent',
     stream('avc1.4D401F,mp4a.40.2', '1280x720', '234', 'https://v/720'),

@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 
 type LogLevel = 'info' | 'warn' | 'error'
 
-/** 非同期処理間で引き継ぐリクエスト・処理の相関情報。 */
+/** Request/operation correlation info carried across async work. */
 interface LogContext {
   request_id?: string
   operation?: string
@@ -12,7 +12,7 @@ interface LogContext {
 
 type LogFields = Record<string, unknown>
 
-/** ログへ含める例外の共通形式。 */
+/** Common shape of an error included in logs. */
 interface ErrorRecord {
   type: string
   message: string
@@ -30,7 +30,7 @@ const bearerPattern = /\bBearer\s+[^\s,;]+/gi
 const urlPattern = /https?:\/\/[^\s"'<>]+/gi
 const maxDiagnosticLength = 4 * 1024
 
-/** URL の認証情報、query 値、fragment を伏せる。 */
+/** Masks URL credentials, query values and fragment. */
 function redactUrl(value: string): string {
   let suffix = ''
   let candidate = value
@@ -55,7 +55,7 @@ function redactUrl(value: string): string {
   }
 }
 
-/** 秘匿値と制御文字を処理し、必要に応じて診断文字列を制限する。 */
+/** Masks secrets and control characters, and truncates diagnostic strings when needed. */
 function sanitizeString(value: string, limit?: number): string {
   let sanitized = value
     .replaceAll(
@@ -83,7 +83,7 @@ function sanitizeString(value: string, limit?: number): string {
   return sanitized
 }
 
-/** 例外から型、説明、終了 code、外部診断出力を共通形式へ抽出する。 */
+/** Extracts the type, message, exit code and external diagnostic output from an error into the common shape. */
 export function normalizeError(value: unknown): ErrorRecord {
   const error = value instanceof Error ? value : new Error(String(value))
   const errorWithDetails = error as Error & {
@@ -107,7 +107,7 @@ export function normalizeError(value: unknown): ErrorRecord {
   return record
 }
 
-/** 任意のログ field を再帰的に秘匿・整形して JSON 化できる値へ変換する。 */
+/** Recursively masks and normalizes any log field into a JSON-serializable value. */
 function sanitizeValue(value: unknown, key = ''): unknown {
   if (sensitiveKeyPattern.test(key)) return '[REDACTED]'
   if (typeof value === 'string') {
@@ -138,7 +138,7 @@ function sanitizeValue(value: unknown, key = ''): unknown {
   return value
 }
 
-/** 共通 field と相関 context を含む JSON Lines record を Console へ出力する。 */
+/** Writes a JSON Lines record with common fields and correlation context to the console. */
 function emit(
   level: LogLevel,
   event: string,
@@ -175,27 +175,27 @@ function emit(
 }
 
 export const logger = {
-  /** 通常の処理 event を stdout へ出力する。 */
+  /** Writes a normal processing event to stdout. */
   info: (event: string, message: string, fields?: LogFields): void => {
     emit('info', event, message, fields)
   },
-  /** 回復可能な問題や fallback event を stderr へ出力する。 */
+  /** Writes a recoverable problem or fallback event to stderr. */
   warn: (event: string, message: string, fields?: LogFields): void => {
     emit('warn', event, message, fields)
   },
-  /** 処理失敗 event を stderr へ出力する。 */
+  /** Writes a processing failure event to stderr. */
   error: (event: string, message: string, fields?: LogFields): void => {
     emit('error', event, message, fields)
   },
-  /** 指定 context を非同期実行へ引き継ぎ、callback の戻り値を返す。 */
+  /** Runs the callback with the given context carried across async execution, returning its result. */
   withContext: <T>(context: LogContext, callback: () => T): T => {
     return contextStorage.run(
       { ...contextStorage.getStore(), ...context },
       callback
     )
   },
-  /** 現在の非同期実行に紐付く context を取得する。 */
+  /** Returns the context bound to the current async execution. */
   getContext: (): LogContext => contextStorage.getStore() ?? {},
-  /** 新しい operation 相関 ID を発行する。 */
+  /** Issues a new operation correlation ID. */
   newOperationId: (): string => randomUUID(),
 }

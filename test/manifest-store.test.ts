@@ -66,7 +66,7 @@ test('buildManifest does not bump generation when content is unchanged', () => {
   )
 
   assert.equal(second.state.generation, first.state.generation)
-  // updatedAt はキャッシュの鮮度として毎回更新される。
+  // updatedAt is refreshed every time as the cache freshness marker.
   assert.equal(second.manifest.updatedAt, 2000)
 })
 

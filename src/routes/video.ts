@@ -2,17 +2,17 @@ import { Router } from 'express'
 import type { AppConfig } from '../config'
 import { resolveAndServe } from '../media-delivery'
 
-// VIDEO_ID_PATTERN (config.ts) の文字クラスをキャプチャグループとして内包し、
-// 末尾の `.mp4` 拡張子の有無を問わず受理できるようにしたパターン。
+// Wraps the character class of VIDEO_ID_PATTERN (config.ts) in a capture group and
+// accepts the id with or without a trailing `.mp4` extension.
 const VIDEO_ID_PARAM_PATTERN = /^([\w-]{11})(?:\.mp4)?$/
 
 /**
  * GET /video/{videoId}
  * GET /video/{videoId}.mp4
  *
- * Playlist/position を経由せず、videoId を直接指定して再生する。`.mp4` 拡張子の有無どちらの
- * 形式も受け付ける。配信方式判定は `resolveAndServe` (../media-delivery) を共有し、
- * 既存 Media Endpoint (../routes/media) と同一の redirect/relay/proxy/hybrid ロジックに従う。
+ * Plays by videoId directly, without going through a Playlist/position. Accepts the id with or without
+ * the `.mp4` extension. Delivery mode selection shares `resolveAndServe` (../media-delivery), following the same
+ * redirect/relay/proxy/hybrid logic as the existing Media Endpoint (../routes/media).
  */
 export function videoRouter(config: AppConfig): Router {
   const router = Router()

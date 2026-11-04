@@ -12,70 +12,71 @@ export interface AppConfig {
   ytdlpPath: string
   defaultMaxSlots: number
   ytdlpTimeoutMs: number
-  /** Client からの GET /:playlistId/manifest.json をこの期間 (ms) はメモリキャッシュで応答し、yt-dlp を再実行しない。 */
+  /** Serve GET /:playlistId/manifest.json from the in-memory cache for this long (ms) without re-running yt-dlp. */
   manifestCacheTtlMs: number
-  /** Manifest の取得失敗後、公開要求からの再試行を待つ期間 (ms)。 */
+  /** How long (ms) to wait after a failed manifest fetch before a public request may retry. */
   manifestRetryDelayMs: number
   /**
-   * Media Endpoint (`GET /:playlistId/:position.mp4`) の配信方式。
-   * - "redirect": 従来通り youtube.com へ 302 Redirect するだけ (既定値)。
-   * - "relay-redirect": relay を試し、relay が 502 になる場合は youtube.com へ 302 Redirect する。
-   * - "proxy": Backend 自身が yt-dlp で動画をダウンロード・キャッシュし、バイト列を直接配信する。
-   *   VRChat 同梱の制限付き yt-dlp が googlevideo.com への直リンク解決に失敗する問題を回避できるが、
-   *   ffmpeg / 十分なディスク容量が必要になる。ダウンロード完了まで応答をブロックするため、
-   *   Client 側の Timeout に間に合わないことがある。
-   * - "hybrid": キャッシュ済みなら "proxy" と同様にバイト列を直接配信し、未キャッシュ (または TTL 切れ)
-   *   なら応答をブロックせずダウンロードを裏で開始しつつ即座に "relay" (解決失敗時のみ "redirect")
-   *   と同様の 302 応答を返す。Client が Timeout 後に再リクエストしてきた頃にはダウンロードが
-   *   完了している想定で、即応性と "proxy" の 403 回避を両立させる。
-   * - "relay": Backend が yt-dlp で解決した HLS master manifest URL へ 302 Redirect する。
-   *   ffmpeg・ディスクキャッシュを使わないステートレスな配信方式 (Live 動画にも共通で使える)。
+   * How the Media Endpoint (`GET /:playlistId/:position.mp4`) delivers VOD videos.
+   * - "redirect": only 302-redirect to youtube.com.
+   * - "relay-redirect": try "relay"; if the relay would return 502, 302-redirect to youtube.com instead.
+   * - "proxy": the backend downloads and caches the video with yt-dlp and serves the bytes itself.
+   *   This avoids the restricted yt-dlp bundled with VRChat failing to resolve direct googlevideo.com links,
+   *   but needs ffmpeg and enough disk space. The response blocks until the download finishes,
+   *   so it may exceed the client timeout.
+   * - "hybrid": serve cached files directly like "proxy"; when not cached (or the TTL expired),
+   *   start the download in the background without blocking and immediately return the same 302 as
+   *   "relay" ("redirect" only if resolution fails). The download is expected to be done by the time
+   *   the client retries after its timeout, combining quick responses with "proxy"'s 403 avoidance.
+   * - "relay": 302-redirect to the HLS master manifest URL resolved by yt-dlp.
+   *   Stateless delivery with no ffmpeg or disk cache (also usable for Live videos).
    */
   mediaDeliveryMode:
     'redirect' | 'relay' | 'relay-redirect' | 'proxy' | 'hybrid'
   /**
-   * Live (配信中) 動画向けの `GET /:playlistId/:position.mp4` 配信方式。
-   * `mediaDeliveryMode` と独立して設定でき、VOD/Live で異なる方式を選べる。
-   * `relay-redirect` を片方に指定する場合、もう片方は `redirect` か `relay-redirect` にする。
-   * `hybrid` は Live 未対応のため指定不可 (起動時エラー)。既定値は "redirect" (現状維持)。
+   * Delivery mode of `GET /:playlistId/:position.mp4` for Live videos.
+   * Independent of `mediaDeliveryMode`, so VOD and Live can use different modes.
+   * If either side uses `relay-redirect`, the other must be `redirect` or `relay-redirect`.
+   * `hybrid` does not support Live and is rejected at startup.
    */
   liveDeliveryMode: 'redirect' | 'relay' | 'relay-redirect' | 'proxy'
-  /** Live `proxy` モードで ffmpeg が HLS 再公開ファイル (playlist + segment) を書き出すディレクトリ。 */
+  /** Directory where ffmpeg writes the republished HLS files (playlist + segments) in Live `proxy` mode. */
   liveRelayOutDir: string
   /**
-   * Live 再公開ファイルの配信ルートへのアクセスが途絶えてから、ffmpeg プロセスを停止するまでの
-   * 猶予期間 (ms)。ディスク容量ではなく常駐 ffmpeg プロセス数が制約になるため、
-   * `mediaCacheTtlMs` (既定 6 時間) より大幅に短い既定値 (5 分) にする。
+   * Grace period (ms) after the last access to a Live republish route before the ffmpeg process is stopped.
+   * The constraint is the number of resident ffmpeg processes rather than disk space,
+   * so this should be much shorter than `mediaCacheTtlMs`.
    */
   liveRelayIdleTtlMs: number
   /**
-   * VOD の多重化済み segment (`liveRelayOutDir` 配下) の合計サイズの上限 (bytes)。idle TTL まで保持するため、
-   * 新しい VOD 再公開を起動する際や周期スイープでこの上限を超えていれば、最終アクセスが最も古いものから破棄する。Live の再公開は対象外。
+   * Maximum total size (bytes) of muxed VOD segments under `liveRelayOutDir`. They are kept until the idle TTL,
+   * so when starting a new VOD republish or during the periodic sweep, entries are evicted oldest-access-first
+   * while this limit is exceeded. Live republishes are not counted.
    */
   liveRelayMaxBytes: number
-  /** "proxy" モードでダウンロードする動画の最大高さ (px)。YouTube 側のフォーマットから、これ以下で最高画質のものを選ぶ。 */
+  /** Maximum video height (px) downloaded in "proxy" mode; the best YouTube format at or below this is chosen. */
   mediaMaxHeight: number
-  /** "proxy" モードでダウンロード済み動画ファイル・メタデータを保存するディレクトリ。 */
+  /** Directory for downloaded video files and metadata in "proxy" mode. */
   mediaCacheDir: string
-  /** "proxy" モードのキャッシュ総容量上限 (bytes)。超過分は最終アクセスが古いものから LRU で削除する。 */
+  /** Total cache size limit (bytes) in "proxy" mode; the excess is evicted LRU, oldest access first. */
   mediaCacheMaxBytes: number
-  /** "proxy" モードでダウンロード済みファイルを新鮮とみなす期間 (ms)。経過後は次回アクセス時に再ダウンロードする。 */
+  /** How long (ms) a downloaded file counts as fresh in "proxy" mode; after that it is re-downloaded on next access. */
   mediaCacheTtlMs: number
-  /** "proxy" モードでの yt-dlp 動画ダウンロード 1 本あたりのタイムアウト (ms)。Playlist 一覧取得より時間がかかるため別枠で持つ。 */
+  /** Per-download yt-dlp timeout (ms) in "proxy" mode; separate from the playlist listing timeout because downloads take longer. */
   mediaDownloadTimeoutMs: number
   /**
-   * Express の `trust proxy` 設定に渡す、信頼するリバースプロキシのホップ数。
-   * `X-Forwarded-For` から `req.ip` を解決する際、ソケットの接続元から遡ってこの数だけの
-   * エントリを信頼する。無条件信頼 (`true`) は行わない。
+   * Number of trusted reverse-proxy hops, passed to Express's `trust proxy`.
+   * When resolving `req.ip` from `X-Forwarded-For`, this many entries counted from the socket peer are trusted.
+   * Unconditional trust (`true`) is never used.
    */
   trustProxy: number
   playlists: PlaylistConfigEntry[]
 }
 
 /**
- * `config/playlists.json` を読み込む。ファイルが存在しない場合は allowlist 無効
- * (`playlists: []`) として扱う (事前登録なしで任意の playlistId を要求可能にするため)。
- * ファイルが存在するのに JSON 破損など他の理由で読み込めない場合は従来通りエラーにする。
+ * Reads `config/playlists.json`. A missing file means the allowlist is disabled
+ * (`playlists: []`), so any playlistId can be requested without prior registration.
+ * Any other read/parse failure (e.g. corrupt JSON) is still an error.
  */
 function readServerConfig(configPath: string): ServerConfig {
   let raw: string
@@ -120,7 +121,7 @@ function readMediaDeliveryMode(
 ): 'redirect' | 'relay' | 'relay-redirect' | 'proxy' | 'hybrid' {
   const raw =
     overrides.mediaDeliveryMode ??
-    // 空文字列 ("MEDIA_DELIVERY_MODE=" のような未設定相当の指定) も既定値扱いにするため || を使う。
+    // An empty string (e.g. "MEDIA_DELIVERY_MODE=") also falls back to the default, hence ||.
     // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing
     (process.env.MEDIA_DELIVERY_MODE?.trim() || 'redirect')
   if (
@@ -142,7 +143,7 @@ function readLiveDeliveryMode(
 ): 'redirect' | 'relay' | 'relay-redirect' | 'proxy' {
   const raw =
     overrides.liveDeliveryMode ??
-    // 空文字列 ("LIVE_DELIVERY_MODE=" のような未設定相当の指定) も既定値扱いにするため || を使う。
+    // An empty string (e.g. "LIVE_DELIVERY_MODE=") also falls back to the default, hence ||.
     // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing
     (process.env.LIVE_DELIVERY_MODE?.trim() || 'redirect')
   if (
@@ -158,7 +159,7 @@ function readLiveDeliveryMode(
   return raw
 }
 
-/** 数値設定は、比較や timer に渡す前に範囲まで検証する。 */
+/** Numeric settings are range-checked before being compared or passed to timers. */
 function readInteger(
   name: string,
   value: string | number | undefined,
@@ -226,7 +227,7 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     ),
     adminToken:
       overrides.adminToken ??
-      // 空文字列 ("ADMIN_TOKEN=" のような未設定相当の指定) も認証無効 (null) 扱いにするため || を使う。
+      // An empty string (e.g. "ADMIN_TOKEN=") also means auth disabled (null), hence ||.
       // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing
       (process.env.ADMIN_TOKEN?.trim() || null),
     ytdlpPath: overrides.ytdlpPath ?? process.env.YTDLP_PATH ?? 'yt-dlp',
@@ -317,23 +318,22 @@ export function maxSlotsFor(config: AppConfig, playlistId: string): number {
   return entry?.maxSlots ?? config.defaultMaxSlots
 }
 
-// YouTube の playlistId (例: "PLxxxxxxxx") は英数字・`_`・`-` のみで構成される。
-// allowlist 無効時は任意の文字列がそのまま Position Pool のディレクトリ名
-// (`encodeURIComponent(playlistId)`) や yt-dlp の引数に渡るため、ここで弾いておかないと
-// "." だけの playlistId (`encodeURIComponent` で変化しない) が `path.join(dataDir, '..')` に
-// 化けて dataDir の外にファイルを読み書きできてしまう (path traversal)。
+// A YouTube playlistId (e.g. "PLxxxxxxxx") consists only of alphanumerics, `_` and `-`.
+// With the allowlist disabled, any string reaches the Position Pool directory name
+// (`encodeURIComponent(playlistId)`) and yt-dlp arguments. A playlistId of just "." is unchanged by
+// `encodeURIComponent` and would turn `path.join(dataDir, '..')` into a path outside dataDir
+// (path traversal), so reject it here.
 export const PLAYLIST_ID_PATTERN = /^[\w-]+$/
 
-// YouTube の videoId (11 文字、英数字・`_`・`-` のみ) は encodeURIComponent で `.` が変化しない。
-// そのため、この形式チェックをしないと videoId '..' が path.join で
-// 親ディレクトリへ抜けてしまう (path traversal)。
+// A YouTube videoId (11 chars, alphanumerics, `_` and `-`) must be format-checked because
+// `encodeURIComponent` leaves `.` unchanged, so a videoId of '..' would escape to the parent
+// directory via path.join (path traversal).
 export const VIDEO_ID_PATTERN = /^[\w-]{11}$/
 
 /**
- * playlistId が要求可能かどうかを判定する。
- * フォーマット (`PLAYLIST_ID_PATTERN`) を満たさないものは常に false。
- * それ以外は `config.playlists` が空 (allowlist 無効) なら true、そうでなければ一覧に
- * 含まれる playlistId のみ true を返す。
+ * Whether playlistId may be requested.
+ * Always false if it does not match `PLAYLIST_ID_PATTERN`.
+ * Otherwise true when `config.playlists` is empty (allowlist disabled), or when the playlistId is listed.
  */
 export function isPlaylistAllowed(
   config: AppConfig,

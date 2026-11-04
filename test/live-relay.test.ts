@@ -17,10 +17,10 @@ vi.mock('../src/live-resolve', () => ({
 }))
 
 /**
- * 実 ffmpeg の代わりに EventEmitter ベースの偽 ChildProcess を返す。呼び出し引数末尾の
- * playlistPath から outDir を特定し、少し遅れて最初のセグメントファイルを書き出すことで
- * `ensureLiveRelay` の `waitForFirstSegment` (fs.watch ベース) を実際のファイルシステム越しに
- * 起動させる (spawn 自体のみモックし、fs はモックしない)。
+ * Returns a fake EventEmitter-based ChildProcess instead of a real ffmpeg. It derives outDir from
+ * the trailing playlistPath argument and writes the first segment file shortly after, so
+ * `ensureLiveRelay`'s fs.watch-based `waitForFirstSegment` runs against the real filesystem
+ * (only spawn is mocked, not fs).
  */
 function makeSpawnMock() {
   const killMocks: ReturnType<typeof vi.fn>[] = []
@@ -30,12 +30,12 @@ function makeSpawnMock() {
     setTimeout(() => {
       fs.writeFileSync(path.join(outDir, 'live0.ts'), 'segment')
     }, 5)
-    // 実 ChildProcess は EventEmitter ベースの `.on('close', ...)` API を持つ (EventTarget では
-    // ない) ため、それを模倣する偽物として EventEmitter を使う必要がある。
+    // A real ChildProcess exposes an EventEmitter-style `.on('close', ...)` API (not EventTarget),
+    // so the fake must be an EventEmitter.
     // eslint-disable-next-line unicorn/prefer-event-target
     const emitter = new EventEmitter() as EventEmitter & { kill: unknown }
-    // 実 ffmpeg は SIGTERM/SIGKILL を受けると程なく終了し 'close' を発火する。
-    // stopLiveRelay() がこの 'close' 待ちでハングしないよう、kill() 呼び出しを模擬的に反映する。
+    // Real ffmpeg exits shortly after SIGTERM/SIGKILL and emits 'close'. Mimic that on kill() so
+    // stopLiveRelay() doesn't hang waiting for 'close'.
     const kill = vi.fn(() => {
       setTimeout(() => {
         emitter.emit('close', null)
@@ -129,11 +129,11 @@ test('touchLiveRelay keeps a videoId alive across another videoId eviction scan'
     touchLiveRelay('testVideo01')
   }
 
-  // v2 起動時の evictIdleLiveRelays() スキャンが v1 を巻き込まないこと (v2 分の spawn のみ増える)。
+  // The evictIdleLiveRelays() scan when v2 starts must not evict v1 (only v2's spawn is added).
   await ensureLiveRelay(config, 'testVideo02')
   assert.equal(spawnMock.mock.calls.length, 2)
 
-  // v1 が evict されていなければ、再度 ensureLiveRelay('testVideo01') しても spawn は増えない。
+  // If v1 wasn't evicted, calling ensureLiveRelay('testVideo01') again adds no spawn.
   await ensureLiveRelay(config, 'testVideo01')
   assert.equal(spawnMock.mock.calls.length, 2)
 })
@@ -154,7 +154,7 @@ test('an idle videoId (no touchLiveRelay) is stopped by another videoId eviction
     'expected v1 ffmpeg to be killed'
   )
 
-  // v1 は evict 済みのため、再度 ensureLiveRelay('testVideo01') すると ffmpeg が再起動される。
+  // v1 was evicted, so ensureLiveRelay('testVideo01') restarts ffmpeg.
   await ensureLiveRelay(config, 'testVideo01')
   assert.equal(spawnMock.mock.calls.length, 3)
 })
@@ -202,8 +202,8 @@ test('ensureLiveRelay resolves to an error when ffmpeg exits before writing any 
 })
 
 test('ensureLiveRelay times out (does not hang forever) when ffmpeg neither writes a segment nor exits', async () => {
-  // fs.promises.mkdir / spawn / fs.watch のセットアップ (実 I/O) を先に完了させるための実時間 setTimeout。
-  // vi.useFakeTimers() 後は global setTimeout がフェイクに置き換わるため、先に退避しておく。
+  // Real-time setTimeout so the real I/O setup (fs.promises.mkdir / spawn / fs.watch) can finish first.
+  // Saved up front because vi.useFakeTimers() replaces the global setTimeout.
   const realSetTimeout = setTimeout
   vi.useFakeTimers()
   try {
@@ -213,8 +213,8 @@ test('ensureLiveRelay times out (does not hang forever) when ffmpeg neither writ
     spawnMock.mockImplementationOnce(() => {
       // eslint-disable-next-line unicorn/prefer-event-target
       const emitter = new EventEmitter() as EventEmitter & { kill: unknown }
-      // 意図的に 'close' も 'error' も発火させず、セグメントも書き出さない (ハングを模擬)。
-      // ただし stopLiveRelay() の後始末 (SIGTERM/SIGKILL) には応答して 'close' を返す。
+      // Deliberately emit neither 'close' nor 'error' and write no segment (simulates a hang),
+      // but still answer stopLiveRelay()'s cleanup (SIGTERM/SIGKILL) with 'close'.
       emitter.kill = vi.fn(() => {
         setTimeout(() => {
           emitter.emit('close', null)
@@ -227,8 +227,8 @@ test('ensureLiveRelay times out (does not hang forever) when ffmpeg neither writ
     await new Promise((resolve) => {
       realSetTimeout(resolve, 20)
     })
-    // waitForFirstSegment のタイムアウト (30s) 到達後、awaitPlayback() が後始末の stopLiveRelay()
-    // を呼び、その中の SIGTERM 猶予 (STOP_GRACE_MS = 5s) も消化する必要があるため、まとめて進める。
+    // After the FIRST_SEGMENT_TIMEOUT_MS wait, awaitPlayback() calls stopLiveRelay() for
+    // cleanup, which also needs STOP_GRACE_MS (the SIGTERM grace) to elapse, so advance both.
     await vi.advanceTimersByTimeAsync(30_000 + 5000)
     const result = await pending
     assert.ok(
@@ -247,7 +247,7 @@ test('a relay still starting up is never evicted by another videoId eviction sca
   spawnMock.mockImplementationOnce((_cmd: string, args: string[]) => {
     const [playlistPath] = args.slice(-1)
     const outDir = path.dirname(playlistPath)
-    // idleTtlMs を大幅に超える遅延で最初のセグメントを書き出す (起動が長引くケースを模擬)。
+    // Write the first segment well past idleTtlMs (simulates a slow startup).
     setTimeout(() => {
       fs.writeFileSync(path.join(outDir, 'live0.ts'), 'segment')
     }, 100)
@@ -265,8 +265,8 @@ test('a relay still starting up is never evicted by another videoId eviction sca
 
   try {
     const slowStart = ensureLiveRelay(config, 'testVideo06')
-    // 起動中 (idleTtlMs を超えて) に別 videoId への ensureLiveRelay が evictIdleLiveRelays() を
-    // 走らせても、起動中の testVideo06 が巻き込まれて evict されないこと。
+    // Even if ensureLiveRelay for another videoId runs evictIdleLiveRelays() while testVideo06 is
+    // still starting (past idleTtlMs), testVideo06 must not be evicted.
     await new Promise((resolve) => setTimeout(resolve, 50))
     await ensureLiveRelay(config, 'testVideo07')
 
@@ -296,7 +296,7 @@ test('stopLiveRelay waits for the ffmpeg process to actually exit before removin
     const emitter = new EventEmitter() as EventEmitter & { kill: unknown }
     const kill = vi.fn(() => {
       killed = true
-      // SIGTERM 後もしばらく生き続ける実プロセスを模擬 (即座には close しない)。
+      // Simulates a real process that stays alive for a while after SIGTERM (doesn't close immediately).
       setTimeout(() => {
         emitter.emit('close', null)
       }, 30)
@@ -348,7 +348,7 @@ test('the periodic sweep stops an idle relay even when no further request arrive
   touchLiveRelay('testVideo01')
 
   await vi.advanceTimersByTimeAsync(2 * 60_000)
-  // stopLiveRelay は SIGTERM 後の close を待つため、実タイマー相当の猶予を与える。
+  // stopLiveRelay waits for 'close' after SIGTERM, so allow real-timer time for it.
   vi.useRealTimers()
   await new Promise((resolve) => setTimeout(resolve, 50))
 
@@ -360,17 +360,17 @@ test('the first ensureLiveRelay removes only relay-generated leftovers and never
   const config = makeConfig()
   const root = config.liveRelayOutDir
 
-  // 前回プロセスが残した再公開ディレクトリ (削除される)
+  // Relay directory left by a previous process (gets deleted)
   const stale = path.join(root, 'staleVideo1')
   fs.mkdirSync(stale, { recursive: true })
   fs.writeFileSync(path.join(stale, 'live0.ts'), 'old segment')
   fs.writeFileSync(path.join(stale, 'live.m3u8'), '#EXTM3U')
 
-  // LIVE_RELAY_OUT_DIR の誤指定を想定した無関係なエントリ (削除されない)
+  // Unrelated entries, as if LIVE_RELAY_OUT_DIR were misconfigured (not deleted)
   fs.writeFileSync(path.join(root, 'state.json'), '{}')
   fs.mkdirSync(path.join(root, 'cache'), { recursive: true })
   fs.writeFileSync(path.join(root, 'cache', 'video.mp4'), 'cached')
-  // videoId 形式の名前でも、再公開の生成ファイル以外を含むディレクトリは削除されない
+  // Even with a videoId-like name, a directory containing non-relay files is not deleted
   const lookalike = path.join(root, 'lookAlike11')
   fs.mkdirSync(lookalike, { recursive: true })
   fs.writeFileSync(path.join(lookalike, 'user-data.db'), 'important')

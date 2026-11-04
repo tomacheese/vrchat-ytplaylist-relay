@@ -84,7 +84,7 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
   }
 }
 
-/** peekFreshCache が読む videoId 用のキャッシュファイル・メタデータを直接書き込む。 */
+/** Directly writes the cache file and metadata for a videoId that peekFreshCache reads. */
 function seedCacheEntry(
   dir: string,
   videoId: string,
@@ -176,7 +176,7 @@ test('getFreshOrStale returns the fresh path without touching download when with
   const config = makeConfig({
     mediaCacheDir: cacheDir,
     mediaCacheTtlMs: 60_000,
-    // 万一バックグラウンドダウンロードが誤って起動されても実害が出ないよう、存在しないバイナリにする。
+    // Use a nonexistent binary so a background download started by mistake does no real harm.
     ytdlpPath: 'yt-dlp-does-not-exist',
   })
 
@@ -190,16 +190,16 @@ test('getFreshOrStale returns the stale path immediately and triggers a backgrou
   const config = makeConfig({
     mediaCacheDir: cacheDir,
     mediaCacheTtlMs: 60_000,
-    // 再ダウンロードは失敗させる (stale 配信自体の検証が目的で、実ダウンロードは不要なため)。
+    // Make the re-download fail (the goal is to verify stale serving; a real download is unnecessary).
     ytdlpPath: 'yt-dlp-does-not-exist',
   })
   const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => undefined)
 
   assert.equal(getFreshOrStale(config, 'v1'), path.join(cacheDir, 'v1.mp4'))
 
-  // triggerBackgroundDownload は完了を待たずに返るため、裏の失敗ログが出るまで少し待って
-  // 実際に再ダウンロードが起動されたことを確認する (単に戻り値だけを見ると、
-  // バックグラウンド起動が壊れていても気付けないため)。
+  // triggerBackgroundDownload returns without waiting for completion, so wait briefly for the
+  // background failure log to confirm a re-download was actually started (checking only the
+  // return value would not notice if the background start were broken).
   await vi.waitFor(() => {
     assert.ok(
       errorSpy.mock.calls.some(
@@ -250,9 +250,9 @@ test('getFreshOrStale returns the stale path on repeated calls, each triggering 
   assert.equal(getFreshOrStale(config, 'v1'), path.join(cacheDir, 'v1.mp4'))
   assert.equal(getFreshOrStale(config, 'v1'), path.join(cacheDir, 'v1.mp4'))
 
-  // downloadMutex は同一 videoId への実行を直列化するだけで呼び出し自体を間引かないため、
-  // 2 回の呼び出しはそれぞれ独立した再ダウンロード試行として順番に失敗する
-  // (2 件とも失敗ログが出るまで待って、両方が実際に起動されたことを確認する)。
+  // downloadMutex only serializes runs for the same videoId and does not collapse calls, so
+  // the two calls fail in turn as independent re-download attempts
+  // (wait until both failure logs appear to confirm both were actually started).
   await vi.waitFor(() => {
     const failureCalls = errorSpy.mock.calls.filter(
       ([event, , fields]) =>
@@ -276,10 +276,10 @@ test('getFreshOrStale returns null when there is no cached entry at all', () => 
 })
 
 /**
- * `-o <template>` を受け取って動画ファイルの代わりを書き出す偽 yt-dlp スクリプトを作る。
- * `succeedAfter` 回目未満の呼び出しでは `failMessage` を stderr に出して exit 1 する
- * (`downloadVideo` の実際のエラー分岐を、実バイナリなしで再現するため)。
- * 呼び出し回数は `<script>.count` ファイルに記録され、テスト側で検証できる。
+ * Creates a fake yt-dlp script that takes `-o <template>` and writes a stand-in video file.
+ * Calls before the `succeedAfter`-th print `failMessage` to stderr and exit 1
+ * (to reproduce `downloadVideo`'s real error branches without the real binary).
+ * The call count is recorded in a `<script>.count` file so tests can check it.
  */
 function makeFakeYtdlp(
   dir: string,
@@ -323,8 +323,8 @@ test('prefetchAll pauses subsequent videos after a bot-detection error, without 
 
   await prefetchAll(config, ['v1', 'v2', 'v3'], 1)
 
-  // v1 が実際に yt-dlp を起動して失敗した 1 回だけで、v2/v3 はクールダウンによりスキップされる
-  // (v3 は個別にログされず、v2 の時点で残り全件がまとめて打ち切られる)。
+  // Only v1 actually launched yt-dlp and failed (once); v2/v3 are skipped by the cooldown
+  // (v3 is not logged individually; the rest are cut off together at v2).
   assert.equal(readAttemptCount(countPath), 1)
   assert.ok(
     warnSpy.mock.calls.some(([event]) => event === 'media.prefetch.failed')

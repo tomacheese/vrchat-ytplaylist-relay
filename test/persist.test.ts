@@ -30,7 +30,7 @@ test('persistSlotState writes slots.json atomically and round-trips via loadSlot
   assert.ok(loaded)
   assert.equal(loaded.generation, 1)
   assert.equal(loaded.videoIdToSlot.v1, 0)
-  // Playlist の実データ (Track 順序 / Title) は永続化されない。
+  // Actual Playlist data (Track order / Title) is not persisted.
   assert.ok(!('order' in (loaded as object)))
   assert.ok(!('titles' in (loaded as object)))
 
@@ -54,7 +54,7 @@ test('recordFailure preserves the previously persisted slot allocation untouched
   assert.ok(loaded)
   assert.equal(loaded.lastRefreshOk, false)
   assert.equal(loaded.lastError, 'yt-dlp exploded')
-  // Position Pool mapping と generation は失敗後も維持される。
+  // The Position Pool mapping and generation are kept after a failure.
   assert.equal(loaded.videoIdToSlot.v1, 0)
   assert.equal(loaded.generation, 1)
 

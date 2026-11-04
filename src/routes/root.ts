@@ -4,8 +4,8 @@ import type { AppConfig } from '../config'
 /**
  * GET /
  *
- * ブラウザや疎通確認で直接アクセスされた際に `Cannot GET /` を返さないための簡易ステータス表示。
- * 認証や構成情報 (ADMIN_TOKEN 等) は含めず、公開して問題ない情報のみ返す。
+ * Simple status display so a direct visit from a browser or connectivity check does not get `Cannot GET /`.
+ * Includes no auth or configuration secrets (ADMIN_TOKEN etc.); only information safe to expose.
  */
 export function rootRouter(config: AppConfig): Router {
   const router = Router()

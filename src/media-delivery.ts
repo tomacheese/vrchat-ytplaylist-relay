@@ -12,19 +12,18 @@ import {
 import { logger } from './logger'
 
 /**
- * Live proxy モードでの再公開ファイル配信ルートへの Redirect URL を組み立てるための情報。
- * `buildRedirectPath` は組み立てに失敗した場合 (例: `media.ts` 側の `PLAYLIST_ID_PATTERN`
- * 再検証失敗) に `null` を返してよい。
- * その場合 `resolveAndServe` は 404 (`{ error: 'unknown playlistId' }`) を返す。
+ * Info for building the redirect URL to the republished-file route in Live proxy mode.
+ * `buildRedirectPath` may return `null` if it cannot build one (e.g. `media.ts` revalidation of
+ * `PLAYLIST_ID_PATTERN` failed).
+ * In that case `resolveAndServe` responds 404 (`{ error: 'unknown playlistId' }`).
  */
 export interface LiveProxyTarget {
   buildRedirectPath: (playlistFileName: string) => string | null
 }
 
 /**
- * 解決済み videoId を YouTube 視聴 URL へ 302 Redirect する。
- * "redirect" モード本体と、"hybrid" モードで HLS manifest の解決に失敗した際のフォールバックの
- * 両方から呼ばれる共通処理。
+ * 302-redirects to the YouTube watch URL for the resolved videoId.
+ * Shared by the "redirect" mode itself and as the fallback when "hybrid" fails to resolve the HLS manifest.
  */
 function redirectToYoutube(res: Response, videoId: string): void {
   res.redirect(
@@ -33,7 +32,7 @@ function redirectToYoutube(res: Response, videoId: string): void {
   )
 }
 
-/** `config` の yt-dlp 実行オプションを使って videoId を解決する (`resolveVideoInfo` の薄いラッパー)。 */
+/** Resolves a videoId using the yt-dlp options from `config` (thin wrapper over `resolveVideoInfo`). */
 function resolveVideoInfoFor(
   config: AppConfig,
   videoId: string
@@ -45,7 +44,7 @@ function resolveVideoInfoFor(
   })
 }
 
-/** 既存の VOD "proxy" 配信ロジック (Live 対応前と同じ)。 */
+/** VOD "proxy" delivery (unchanged from before Live support). */
 function serveVodProxy(
   config: AppConfig,
   videoId: string,
@@ -74,10 +73,10 @@ function serveVodProxy(
 }
 
 /**
- * Live "proxy" 配信ロジック: ensureLiveRelay() で再公開を起動し、`liveProxyTarget` が組み立てる
- * Live 再公開ファイルの配信ルートへ 302 する。`buildRedirectPath` が `null` を返した場合
- * (呼び出し元の playlistId 再検証失敗など) は 404 を返す。再公開の起動に失敗した場合は 502 を返すが、
- * `onFailure` が渡されていれば代わりにそれを呼ぶ (hybrid が redirect にフォールバックするため)。
+ * Live "proxy" delivery: start the republish via ensureLiveRelay() and 302 to the republished-file
+ * route built by `liveProxyTarget`. If `buildRedirectPath` returns `null` (e.g. the caller's playlistId
+ * revalidation failed), respond 404. If starting the republish fails, respond 502, or call
+ * `onFailure` instead when provided (hybrid falls back to redirect).
  */
 function serveLiveProxy(
   config: AppConfig,
@@ -142,11 +141,11 @@ function serveLiveProxy(
 }
 
 /**
- * "relay" 配信ロジック。解決に失敗していれば 502。
- * 音声込みの AVC1 variant (単一 URL) が選べていればその URL へ 302 する。
- * 選べなかった VOD (YouTube の VOD は音声が別 rendition で、AVC1 variant が映像のみ) は、
- * AVPro が別 rendition の音声を再生できず無音になるため、ffmpeg で
- * segment 単位で音声込みの MPEG-TS に多重化して配信する (Live "proxy" と同じ配信ルート。`vod-relay.ts` 参照)。
+ * "relay" delivery. 502 if resolution failed.
+ * If a single AVC1 variant with audio was found, 302 to its URL.
+ * Otherwise (YouTube VOD keeps audio in a separate rendition and the AVC1 variant is video-only,
+ * so AVPro would play silently) mux segments with audio into MPEG-TS via ffmpeg and serve them
+ * (same route as Live "proxy"; see `vod-relay.ts`).
  */
 function serveRelay(
   config: AppConfig,
@@ -181,39 +180,38 @@ function serveRelay(
 }
 
 /**
- * videoId に対して config の配信方式判定 (redirect/relay/relay-redirect/proxy/hybrid, VOD/Live 判定込み) を行い、
- * レスポンスを直接書き込む。`src/routes/media.ts` (Playlist/position 経由) と
- * `src/routes/video.ts` (videoId 直接指定) の両方から呼ばれる共有処理。
+ * Picks the delivery mode for a videoId (redirect/relay/relay-redirect/proxy/hybrid, VOD vs Live)
+ * and writes the response directly. Shared by `src/routes/media.ts` (via playlist/position)
+ * and `src/routes/video.ts` (direct videoId).
  *
- * `effectiveMode` ごとの挙動:
- * - "redirect": 動画バイト列を配信せず、解決した YouTube 動画へ 302 Redirect するだけ。
- *   VRChat の AVProVideoPlayer は youtube.com の URL をネイティブに解釈できるが、VRChat 同梱の
- *   制限付き yt-dlp が googlevideo.com 直リンクの解決に失敗し再生できないことがある。
- * - "relay": yt-dlp が解決した HLS manifest URL (音声込みの AVC1 単一 variant) へ 302 Redirect する。
- *   単一 variant が無い場合、Live は YouTube 生の master manifest URL へ 302 Redirect する。
- *   VOD は音声が別 rendition で AVPro が無音になるため、segment 単位で音声込みの MPEG-TS に多重化して配信する
- *   (Live "proxy" と同じ再公開経路。単一 variant がある場合はステートレスな 302 のみ)。
- * - "relay-redirect": "relay" を試し、解決または relay 準備が失敗した場合は YouTube watch URL へ 302 Redirect する。
- * - "proxy" (VOD): Backend 自身が yt-dlp で動画をダウンロード・キャッシュし (media-cache.ts)、
- *   バイト列を直接配信する。ダウンロード完了まで応答をブロックするため、Client 側の Timeout に
- *   間に合わないことがある。
- * - "proxy" (Live): Backend が ffmpeg で HLS をローカル再公開し (live-relay.ts)、`liveProxyTarget`
- *   が組み立てる Live 再公開ファイルの配信ルートへ 302 Redirect する。
- * - "hybrid" (VOD 専用。Live には指定できない): キャッシュ済みなら "proxy" と同様にバイト列を
- *   直接配信する。未キャッシュ (または TTL 切れ) の場合は応答をブロックせず、裏でダウンロードを
- *   開始しつつ即座に "relay" と同様の 302 応答を返す。
- *   解決に失敗した場合のみ "redirect" 相当の youtube.com へフォールバックする。
- *   Client が Timeout 後に再リクエストしてくる頃にはダウンロードが完了している想定。
+ * Behavior per `effectiveMode`:
+ * - "redirect": serve no bytes; just 302-redirect to the YouTube video.
+ *   VRChat's AVProVideoPlayer understands youtube.com URLs natively, but the restricted yt-dlp
+ *   bundled with VRChat sometimes fails to resolve direct googlevideo.com links and cannot play.
+ * - "relay": 302-redirect to the HLS manifest URL resolved by yt-dlp (a single AVC1 variant with audio).
+ *   Without a single variant, Live redirects to YouTube's raw master manifest URL.
+ *   For VOD the audio is a separate rendition and AVPro would play silently, so segments are muxed
+ *   into MPEG-TS with audio and served (same republish route as Live "proxy"; a stateless 302 when
+ *   a single variant exists).
+ * - "relay-redirect": try "relay"; if resolution or relay setup fails, 302-redirect to the YouTube watch URL.
+ * - "proxy" (VOD): the backend downloads and caches the video with yt-dlp (media-cache.ts)
+ *   and serves the bytes itself. The response blocks until the download finishes,
+ *   so it may exceed the client timeout.
+ * - "proxy" (Live): the backend republishes the HLS locally with ffmpeg (live-relay.ts) and
+ *   302-redirects to the route built by `liveProxyTarget`.
+ * - "hybrid" (VOD only; not allowed for Live): serve cached files directly like "proxy".
+ *   When not cached (or the TTL expired), start the download in the background without blocking
+ *   and immediately return the same 302 as "relay". Only if resolution fails, fall back to a
+ *   youtube.com redirect as in "redirect". The download is expected to be done by the time the
+ *   client retries after its timeout.
  *
- * "proxy" (VOD) / "hybrid" いずれも、TTL 切れで再ダウンロード中の場合は直前まで有効だった完了済み
- * キャッシュファイルを ("stale-while-revalidate") そのまま配信し続ける (`getFreshOrStale`)。
- * この間はブロックや Redirect フォールバックを発生させない。
- * 再ダウンロードが完了すると次回以降のリクエストから新しいファイルに切り替わる。
+ * For both "proxy" (VOD) and "hybrid", while a TTL-expired file is being re-downloaded, the previously
+ * valid completed cache file keeps being served ("stale-while-revalidate", `getFreshOrStale`),
+ * with no blocking or redirect fallback. Once the re-download finishes, later requests get the new file.
  *
- * @param liveProxyTarget 再公開ファイル (Live "proxy"、および音声が別 rendition の VOD の "relay"/"hybrid") の
- *   配信ルートへの Redirect URL 組み立て方法。
- *   呼び出し元 (Playlist/position 経由か videoId 直接指定か) によって Redirect 先のパスが異なるため、
- *   呼び出し側から注入する。
+ * @param liveProxyTarget How to build the redirect URL to the republished-file route (Live "proxy", and
+ *   "relay"/"hybrid" for VOD whose audio is a separate rendition). The redirect path differs by caller
+ *   (playlist/position vs direct videoId), so the caller injects it.
  */
 export function resolveAndServe(
   config: AppConfig,
@@ -276,8 +274,8 @@ export function resolveAndServe(
           redirectToYoutube(res, videoId)
           return
         }
-        // "relay": スキップ条件からこの時点で config.mediaDeliveryMode === 'relay' が確定するが、
-        // 解決結果 (hlsMasterManifestUrl) 自体はまだ取得していないためここで呼ぶ。
+        // "relay": the skip condition guarantees mediaDeliveryMode === 'relay' here,
+        // but the resolved info (hlsMasterManifestUrl) has not been fetched yet, so resolve it now.
         resolveVideoInfoFor(config, videoId)
           .then((info) => {
             isLive = info.isLive
@@ -337,8 +335,8 @@ export function resolveAndServe(
               return
             }
             case 'hybrid': {
-              // liveDeliveryMode は "hybrid" を許容しないため (config.ts のバリデーション)、
-              // effectiveMode が "hybrid" になるのは info.isLive === false の場合のみ。
+              // liveDeliveryMode cannot be "hybrid" (validated in config.ts), so
+              // effectiveMode is "hybrid" only when info.isLive === false.
               const cachedPath = getFreshOrStale(config, videoId)
               if (cachedPath) {
                 res.sendFile(path.resolve(cachedPath))
