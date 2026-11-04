@@ -5,7 +5,7 @@
 # Renovate (customManagers in renovate.json) updates the version, so use a pinned tag, not latest.
 # --from cannot expand an ARG defined inside a build stage (a buildx limitation), so declare the ARG
 # at global scope, make deno its own stage with FROM, and pull it in with COPY --from.
-ARG DENO_VERSION=2.7.11
+ARG DENO_VERSION=2.9.8
 FROM denoland/deno:bin-${DENO_VERSION} AS deno
 
 FROM node:24-bookworm-slim AS build
