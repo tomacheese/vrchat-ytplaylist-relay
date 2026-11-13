@@ -8,7 +8,7 @@
 ARG DENO_VERSION=2.9.8
 FROM denoland/deno:bin-${DENO_VERSION} AS deno
 
-FROM node:24-bookworm-slim AS build
+FROM node:26-bookworm-slim AS build
 
 RUN corepack enable
 
@@ -20,7 +20,7 @@ COPY tsconfig.json tsconfig.build.json ./
 COPY src ./src
 RUN pnpm run build
 
-FROM node:24-bookworm-slim AS runtime
+FROM node:26-bookworm-slim AS runtime
 
 # ffmpeg: required in "proxy" mode to merge video (DASH) + audio (DASH) into mp4.
 # ca-certificates: needed for yt-dlp / Node HTTPS. curl: used to fetch the yt-dlp standalone binary.
