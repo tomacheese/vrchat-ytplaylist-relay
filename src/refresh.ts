@@ -10,6 +10,7 @@ import {
   loadSlotState,
   persistSlotState,
   recordFailure,
+  withSlotStateLock,
 } from './manifest-store'
 import type { Manifest } from './types'
 import { fetchPlaylistEntries } from './ytdlp'
@@ -178,15 +179,22 @@ function runRefresh(
             ytdlpPath: config.ytdlpPath,
             timeoutMs: config.ytdlpTimeoutMs,
           })
-          const previous = loadSlotState(config.dataDir, playlistId)
-          const { state, manifest } = buildManifest(
-            previous,
+          const { state, manifest } = await withSlotStateLock(
+            config.dataDir,
             playlistId,
-            maxSlots,
-            entries,
-            now
+            () => {
+              const previous = loadSlotState(config.dataDir, playlistId)
+              const built = buildManifest(
+                previous,
+                playlistId,
+                maxSlots,
+                entries,
+                now
+              )
+              persistSlotState(config.dataDir, built.state)
+              return built
+            }
           )
-          persistSlotState(config.dataDir, state)
           manifestCache.set(playlistId, { manifest, fetchedAt: now })
           recentFailures.delete(failureKey(config, playlistId))
           logger.info(
@@ -245,7 +253,7 @@ function runRefresh(
           })
           pruneRecentFailures()
           try {
-            recordFailure(
+            await recordFailure(
               config.dataDir,
               playlistId,
               maxSlots,

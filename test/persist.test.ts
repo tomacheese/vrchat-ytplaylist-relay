@@ -37,7 +37,7 @@ test('persistSlotState writes slots.json atomically and round-trips via loadSlot
   fs.rmSync(dataDir, { recursive: true, force: true })
 })
 
-test('recordFailure preserves the previously persisted slot allocation untouched', () => {
+test('recordFailure preserves the previously persisted slot allocation untouched', async () => {
   const dataDir = tempDataDir()
   const { state } = buildManifest(
     null,
@@ -48,7 +48,7 @@ test('recordFailure preserves the previously persisted slot allocation untouched
   )
   persistSlotState(dataDir, state)
 
-  recordFailure(dataDir, 'PLxyz', 10, 'yt-dlp exploded', 222)
+  await recordFailure(dataDir, 'PLxyz', 10, 'yt-dlp exploded', 222)
 
   const loaded = loadSlotState(dataDir, 'PLxyz')
   assert.ok(loaded)

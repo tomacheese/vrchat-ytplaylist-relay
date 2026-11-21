@@ -98,6 +98,8 @@ Run `pnpm refresh` with the same environment settings as the server. Without arg
 
 The CLI is a separate process from the server. Position state is written to disk, but the running server's in-memory manifest cache is not invalidated, so the change appears in the public manifest only after the TTL expires. To reflect it immediately, use the authenticated admin endpoint.
 
+The server and the CLI serialize position state updates per Playlist with a lock file, `slots.json.lock`, in the Playlist's directory under `DATA_DIR`, so a refresh in one process never overwrites a slot assignment made by the other. A lock file older than 5 seconds is treated as left behind by a crashed process and is reclaimed. If the lock cannot be acquired within 10 seconds, the refresh fails like any other refresh failure and can be retried. `DATA_DIR` must be on a local filesystem shared by the processes on one host.
+
 ```bash
 pnpm refresh
 pnpm refresh PLxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx

@@ -32,6 +32,75 @@ function writeFileAtomic(filePath: string, content: string): void {
   fs.renameSync(tmpPath, filePath)
 }
 
+function errorCode(error: unknown): string | undefined {
+  return error instanceof Error && 'code' in error
+    ? String(error.code)
+    : undefined
+}
+
+function unlinkIfExists(filePath: string): void {
+  try {
+    fs.unlinkSync(filePath)
+  } catch (error) {
+    if (errorCode(error) !== 'ENOENT') throw error
+  }
+}
+
+/**
+ * Runs `fn` while holding a per-Playlist lock file shared by every process using `dataDir`,
+ * so a load → modify → persist cycle of the Position Pool state cannot interleave with another process.
+ * `fn` must be synchronous: the lock is held only for its duration and never across an `await`.
+ * A lock file older than `staleMs` is treated as left by a crashed process and reclaimed.
+ * Requires `dataDir` to be on a local filesystem shared by processes on one host.
+ * @throws If the lock cannot be acquired within `timeoutMs`
+ */
+export async function withSlotStateLock<T>(
+  dataDir: string,
+  playlistId: string,
+  fn: () => T,
+  options: { timeoutMs?: number; staleMs?: number; pollMs?: number } = {}
+): Promise<T> {
+  const { timeoutMs = 10_000, staleMs = 5000, pollMs = 25 } = options
+  const lockPath = `${slotStatePath(dataDir, playlistId)}.lock`
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true })
+  const deadline = Date.now() + timeoutMs
+
+  for (;;) {
+    try {
+      const fd = fs.openSync(lockPath, 'wx')
+      try {
+        fs.writeSync(fd, String(process.pid))
+      } finally {
+        fs.closeSync(fd)
+      }
+      break
+    } catch (error) {
+      if (errorCode(error) !== 'EEXIST') throw error
+    }
+
+    try {
+      if (Date.now() - fs.statSync(lockPath).mtimeMs > staleMs) {
+        fs.unlinkSync(lockPath)
+      } else {
+        if (Date.now() >= deadline) {
+          throw new Error(
+            `Timed out acquiring Position Pool lock for playlist ${playlistId} (${lockPath})`
+          )
+        }
+        await new Promise((resolve) => setTimeout(resolve, pollMs))
+      }
+    } catch (error) {
+      if (errorCode(error) !== 'ENOENT') throw error
+    }
+  }
+
+  try {
+    return fn()
+  } finally {
+    unlinkIfExists(lockPath)
+  }
+}
+
 /**
  * Loads the persisted Position Pool state for a playlistId.
  * @returns null if it has never been refreshed
@@ -172,14 +241,16 @@ export function recordFailure(
   maxSlots: number,
   error: string,
   now: number
-): void {
-  const previous =
-    loadSlotState(dataDir, playlistId) ?? emptySlotState(playlistId, maxSlots)
-  const next: SlotAllocationState = {
-    ...previous,
-    lastRefreshAt: now,
-    lastRefreshOk: false,
-    lastError: error,
-  }
-  persistSlotState(dataDir, next)
+): Promise<void> {
+  return withSlotStateLock(dataDir, playlistId, () => {
+    const previous =
+      loadSlotState(dataDir, playlistId) ?? emptySlotState(playlistId, maxSlots)
+    const next: SlotAllocationState = {
+      ...previous,
+      lastRefreshAt: now,
+      lastRefreshOk: false,
+      lastError: error,
+    }
+    persistSlotState(dataDir, next)
+  })
 }
