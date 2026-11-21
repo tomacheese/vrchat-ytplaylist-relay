@@ -53,6 +53,9 @@ const relayMutex = new KeyedMutex()
 /** Running live relays by videoId. */
 const relays = new Map<string, LiveRelayState>()
 
+/** In-flight `stopLiveRelay` teardowns; a new relay for the same videoId must wait, as outDir is shared. */
+const stopping = new Map<string, Promise<void>>()
+
 /**
  * Absolute directory holding a videoId's relay files (playlist + segments).
  * `encodeURIComponent(videoId)` is the same path-traversal guard as `cacheFilePath()` in
@@ -153,13 +156,19 @@ function waitForFfmpegExit(state: LiveRelayState): Promise<void> {
  * files (so a new process never shares an outDir with an old one still writing).
  * Called on URL expiry / stream end, eviction, and forced stops in tests.
  */
-export async function stopLiveRelay(videoId: string): Promise<void> {
+export function stopLiveRelay(videoId: string): Promise<void> {
   const state = relays.get(videoId)
-  if (!state) return
+  if (!state) return stopping.get(videoId) ?? Promise.resolve()
   relays.delete(videoId)
-  state.ffmpegProcess.kill('SIGTERM')
-  await waitForFfmpegExit(state)
-  await fs.promises.rm(state.outDir, { recursive: true, force: true })
+  const done = (async () => {
+    state.ffmpegProcess.kill('SIGTERM')
+    await waitForFfmpegExit(state)
+    await fs.promises.rm(state.outDir, { recursive: true, force: true })
+  })().finally(() => {
+    stopping.delete(videoId)
+  })
+  stopping.set(videoId, done)
+  return done
 }
 
 /**
@@ -500,6 +509,8 @@ export async function ensureLiveRelay(
   if (vod) return vod
 
   return relayMutex.run(videoId, async () => {
+    await stopping.get(videoId)
+
     // Re-check: another caller may have finished starting while we waited for the mutex
     // (same reason as downloadAndCache() in media-cache.ts).
     const recheck = relays.get(videoId)

@@ -22,6 +22,8 @@ vi.mock('../src/live-resolve', () => ({
  * `ensureLiveRelay`'s fs.watch-based `waitForFirstSegment` runs against the real filesystem
  * (only spawn is mocked, not fs).
  */
+let closeDelayMs = 1
+
 function makeSpawnMock() {
   const killMocks: ReturnType<typeof vi.fn>[] = []
   const spawnMock = vi.fn((_cmd: string, args: string[]) => {
@@ -39,7 +41,7 @@ function makeSpawnMock() {
     const kill = vi.fn(() => {
       setTimeout(() => {
         emitter.emit('close', null)
-      }, 1)
+      }, closeDelayMs)
     })
     emitter.kill = kill
     killMocks.push(kill)
@@ -96,6 +98,7 @@ beforeEach(async () => {
 afterEach(async () => {
   vi.useRealTimers()
   vi.unstubAllGlobals()
+  closeDelayMs = 1
   const { stopLiveRelay } = await import('../src/live-relay')
   await stopLiveRelay('testVideo01')
   await stopLiveRelay('testVideo02')
@@ -115,6 +118,23 @@ test('ensureLiveRelay spawns ffmpeg only once for concurrent requests of the sam
   assert.equal(spawnMock.mock.calls.length, 1)
   assert.deepEqual(a, b)
   assert.ok('outDir' in a)
+})
+
+test('ensureLiveRelay waits for an in-flight stop and keeps the new relay output directory', async () => {
+  const { ensureLiveRelay, stopLiveRelay } = await import('../src/live-relay')
+  const config = makeConfig()
+
+  const first = await ensureLiveRelay(config, 'testVideo01')
+  assert.ok('outDir' in first)
+
+  closeDelayMs = 100
+  const stopping = stopLiveRelay('testVideo01')
+  const second = await ensureLiveRelay(config, 'testVideo01')
+  await stopping
+
+  assert.equal(spawnMock.mock.calls.length, 2)
+  assert.ok('outDir' in second)
+  assert.ok(fs.existsSync(second.outDir))
 })
 
 test('touchLiveRelay keeps a videoId alive across another videoId eviction scan', async () => {
